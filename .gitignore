@@ -34,3 +34,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# WXT build output
+/extension/node_modules/
+/extension/.output/
+/extension/.wxt/
+/extension/.env*
+/extension/.npm-cache/
