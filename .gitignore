@@ -41,3 +41,12 @@ next-env.d.ts
 /extension/.wxt/
 /extension/.env*
 /extension/.npm-cache/
+
+# local Python backend state
+/backend/.venv/
+/backend/.tmp/
+/backend/.pip-cache/
+/backend/data/
+/backend/.pytest_cache/
+__pycache__/
+*.py[cod]

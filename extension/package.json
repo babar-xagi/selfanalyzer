@@ -7,6 +7,7 @@
     "dev": "wxt",
     "build": "wxt build",
     "typecheck": "tsc --noEmit",
+    "test:backend-live": "node tests/backend-live.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

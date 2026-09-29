@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
+import { uploadSession } from '../../lib/backend';
 import {
   appendChunk, createSession, deleteSession, finishSession, getRecording,
   listSessions, recoverInterruptedSessions, updateSession,
@@ -63,6 +64,7 @@ export function App() {
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [uploading, setUploading] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const cameraRef = useRef<MediaStream | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
@@ -295,6 +297,7 @@ export function App() {
   async function selectSession(session: Session) {
     clearPlayback();
     const token = selectionTokenRef.current;
+    setError('');
     setSelected(session);
     setStatus(session.status);
     setNotes(session.notes);
@@ -329,6 +332,35 @@ export function App() {
     setNotice('Download requested. Check browser downloads for the file.');
   }
 
+  async function sendToLocalApi() {
+    if (!selected || !recordingUrl || uploading) return;
+    const session = { ...selected, notes };
+    setError(''); setNotice(''); setUploading(true);
+    try {
+      let blob: Blob | null = null;
+      try { blob = await getRecording(session.id); }
+      catch { /* In-memory playback can still be sent when local storage failed. */ }
+      let recording: Blob;
+      if (blob) recording = blob;
+      else recording = await fetch(recordingUrl).then((response) => response.blob());
+      await uploadSession(session, recording);
+      if (mountedRef.current) {
+        setNotice('The local Python API received and saved this recording. Your browser copy is still available.');
+        try {
+          const updated = await updateSession(session.id, { notes, uploadedAt: Date.now() });
+          setSelected(updated);
+          await refreshSessions();
+        } catch {
+          setNotice('The Python API saved the recording, but this browser could not mark it as sent.');
+        }
+      }
+    } catch (cause) {
+      if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The local upload failed.');
+    } finally {
+      if (mountedRef.current) setUploading(false);
+    }
+  }
+
   async function removeSession(session: Session) {
     if (!window.confirm('Delete this session, its notes, and its recording from this browser?')) return;
     try {
@@ -339,7 +371,7 @@ export function App() {
     } catch { setError('The session could not be deleted from local storage.'); }
   }
 
-  const busy = activeStatuses.includes(status) || cameraStatus === 'requesting';
+  const busy = activeStatuses.includes(status) || cameraStatus === 'requesting' || uploading;
   const canStart = !busy && (mode === 'audio' || cameraStatus === 'ready');
   const activeId = activeIdRef.current;
 
@@ -348,7 +380,7 @@ export function App() {
       <div className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your practice</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Sessions and recordings are saved in this browser. Nothing is uploaded.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Sessions and recordings are saved in this browser. You can explicitly send a finished recording to the local Python API.</p>
 
         <fieldset className="mt-8" disabled={busy}>
           <legend className="text-sm font-medium text-slate-200">Recording mode</legend>
@@ -393,16 +425,19 @@ export function App() {
             <p className="mt-3 break-all font-mono text-xs text-slate-400">{selected.id}</p>
             <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.mode} · {selected.status} · {duration(selected.durationMs)}</p>
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
+            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">Sent to local API on {new Date(selected.uploadedAt).toLocaleString()}</p>}
             {recordingUrl && (selected.mode === 'video'
               ? <video className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" />
               : <audio className="mt-4 w-full" controls src={recordingUrl} preload="metadata" />)}
             <label className="mt-5 block text-sm font-medium" htmlFor="session-notes">Notes</label>
-            <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" />
+            <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" disabled={uploading} />
             <div className="mt-4 flex flex-wrap gap-3">
-              <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button">Save notes</button>
+              <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button" disabled={uploading}>Save notes</button>
               {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950" onClick={download} type="button">Download recording</button>}
-              <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button">Delete session</button>
+              {recordingUrl && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading}>{uploading ? 'Sending to local API…' : 'Send to local API'}</button>}
+              <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
+            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">Sending copies this recording and your notes to the Python server on this computer at 127.0.0.1:8000. Start the server first; your browser copy remains available.</p>}
           </section>
         )}
 

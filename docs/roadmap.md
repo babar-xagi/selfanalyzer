@@ -9,7 +9,7 @@ The [blueprint](../project.md) describes the intended sequence. Status here refl
 | 002 | Local microphone recording, timer, playback, download, and delete | Implemented; type-check, build, 2m21s generated-audio playback, delete, and denied-permission checks passed. Real Chrome microphone and completed download checks pending |
 | 003 | Optional webcam preview and audio/video recording | Implemented; synthetic camera/audio preview, recording, playback, delete, and camera-denial checks passed. Real Chrome camera/microphone and downloaded-file checks pending |
 | 004 | Session lifecycle, local recording store, notes, and interruption recovery | Implemented; type-check, build, synthetic audio/video sessions, note persistence, tab-close recovery, device disconnect, permission denial, and deletion checks passed. Real Chrome device and downloaded-file checks pending |
-| 005 | FastAPI session and upload API | Planned |
+| 005 | FastAPI session and upload API | Implemented; backend lifecycle tests, TypeScript client to live Python API, synthetic browser UI upload, extension type-check, and build passed. Manual unpacked Chrome upload check pending |
 | 006 | Timestamped speech-to-text | Planned |
 | 007–010 | Grammar, natural English, speaking analytics, and full report | Planned; MVP 1.0 boundary |
 | 011–020 | Video signals, history, storage, progress, practice, and production features | Later |

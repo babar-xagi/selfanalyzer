@@ -14,6 +14,7 @@ export interface Session {
   sizeBytes: number;
   notes: string;
   error: string | null;
+  uploadedAt?: number | null;
 }
 
 interface Chunk { sessionId: string; index: number; blob: Blob }

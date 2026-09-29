@@ -10,7 +10,7 @@ Ask for camera permission only when the user enables the preview, and for microp
 
 ## Data handling
 
-Keep raw recordings local until the user chooses to upload them. Future backend work should define retention, deletion, access controls, and provider data handling before sending recordings to AI services. Treat transcripts as sensitive personal data. Do not put recordings or transcripts in logs.
+Keep raw recordings in the browser until the user chooses to send a copy to the local Python API. Future cloud backend work must define retention, deletion, access controls, and provider data handling before sending recordings to AI services. Treat transcripts as sensitive personal data. Do not put recordings or transcripts in logs.
 
 ## Feedback boundaries
 
@@ -18,4 +18,4 @@ Report observable behavior such as word count, pace, fillers, and pauses. Do not
 
 ## Current milestone
 
-Milestone 004 stores the selected practice focus, session metadata, notes, recording chunks, and finished media in the extension's browser origin. The chunks are removed when a session is finalized or deleted. Nothing is transmitted or analyzed. Deleting a session removes its metadata, finished media, and remaining chunks from the app's IndexedDB. Browser storage can be cleared or evicted, so users should download recordings they need to keep. The browser may show camera and microphone permission prompts after the corresponding user actions.
+Milestone 005 keeps the selected practice focus, session metadata, notes, recording chunks, and finished media in the extension's browser origin. The chunks are removed when a session is finalized or deleted. Clicking Send to local API copies the recording and notes to FastAPI at `127.0.0.1:8000`, which stores them in local SQLite and files. No cloud provider or AI service receives them. Deleting a session in the extension removes its browser copy but does not remove the API copy; the API has no deletion endpoint yet. Browser storage can be cleared or evicted, so users should download recordings they need to keep. The browser may show camera and microphone permission prompts after the corresponding user actions.

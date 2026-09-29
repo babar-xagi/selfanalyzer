@@ -1,0 +1,37 @@
+# Local Python API
+
+This milestone proves that the extension can send a saved session and recording to Python. The API does not transcribe, analyze, or upload media to a cloud service.
+
+## Run on Windows
+
+From `backend/`:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Or with uv in WSL, run `uv sync --extra dev` and `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` from this directory. The extension connects to `http://127.0.0.1:8000`, so the server must be reachable at that Windows address.
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Check server availability |
+| POST | `/sessions` | Create or reuse a session ID |
+| POST | `/sessions/{id}/recording` | Upload one recording as multipart field `file` |
+| POST | `/sessions/{id}/finish` | Save duration, notes, and local completion state |
+| GET | `/sessions/{id}` | Read saved metadata and upload confirmation |
+
+Session requests require `X-Conversation-Coach-Client: extension`. This header blocks ordinary browser forms; it is not authentication against other programs running on the computer. Keep the server bound to `127.0.0.1`. Recording types are WebM, Ogg audio, and MP4 audio/video, up to 256 MiB. Retries using the same ID and recording bytes are accepted. A different recording for an existing ID is rejected.
+
+Metadata lives in `backend/data/sessions.sqlite3`, and recordings in `backend/data/recordings/`. Set `CONVERSATION_COACH_DATA_DIR` to use another local directory. This directory is ignored by Git. The API has no deletion endpoint yet; deleting a session in the extension deletes the browser copy only. To remove the API copy, stop the server and remove the corresponding local data manually. Back up anything you need to keep.
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python -m pytest -q
+```
+
+With the API running, use `npm run test:backend-live` from `extension/` to send synthetic bytes through the actual TypeScript client and verify the Python response.
