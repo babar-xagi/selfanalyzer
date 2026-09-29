@@ -6,7 +6,7 @@ The first recording implementation will capture only the user's microphone and, 
 
 ## Permission and control
 
-Ask for microphone or camera permission only when the user starts a recording that needs it. Show a clear recording state and an obvious Stop control. Let the user play back and delete a recording before any upload. Do not request media permissions in the extension foundation.
+Ask for camera permission only when the user enables the preview, and for microphone permission only when they start a recording. Show a clear recording state and an obvious Stop control. Let the user play back and delete a recording before any upload. Do not request media permissions in the extension foundation.
 
 ## Data handling
 
@@ -18,4 +18,4 @@ Report observable behavior such as word count, pace, fillers, and pauses. Do not
 
 ## Current milestone
 
-Milestone 002 stores the selected practice focus in the extension origin. Microphone audio is held only in the recording tab's memory until the user downloads or deletes it. It does not transmit or analyze media. The browser may show a microphone permission prompt after the user clicks Start Recording.
+Milestone 003 stores the selected practice focus in the extension origin. Microphone audio and optional webcam video are held only in the recording tab's memory until the user downloads or deletes them. It does not transmit or analyze media. The browser may show camera and microphone permission prompts after the corresponding user actions.
