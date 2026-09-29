@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import { uploadSession } from '../../lib/backend';
+import { TranscriptPanel } from './TranscriptPanel';
 import {
   appendChunk, createSession, deleteSession, finishSession, getRecording,
   listSessions, recoverInterruptedSessions, updateSession,
@@ -380,7 +381,7 @@ export function App() {
       <div className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your practice</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Sessions and recordings are saved in this browser. You can explicitly send a finished recording to the local Python API.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Sessions and recordings are saved in this browser. Send a finished recording to the local Python API to receive a transcript.</p>
 
         <fieldset className="mt-8" disabled={busy}>
           <legend className="text-sm font-medium text-slate-200">Recording mode</legend>
@@ -440,6 +441,8 @@ export function App() {
             {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">Sending copies this recording and your notes to the Python server on this computer at 127.0.0.1:8000. Start the server first; your browser copy remains available.</p>}
           </section>
         )}
+
+        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} sessionId={selected.id} />}
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent sessions</h2><button className="text-sm text-emerald-300 underline" onClick={() => void recover()} type="button">Recover interrupted</button></div>

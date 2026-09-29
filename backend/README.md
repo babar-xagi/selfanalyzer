@@ -1,6 +1,6 @@
 # Local Python API
 
-This milestone proves that the extension can send a saved session and recording to Python. The API does not transcribe, analyze, or upload media to a cloud service.
+The extension sends a saved session and recording to Python. The API can transcribe its English speech locally with Faster Whisper. No recording is uploaded to a speech service.
 
 ## Run on Windows
 
@@ -23,10 +23,14 @@ Or with uv in WSL, run `uv sync --extra dev` and `uv run uvicorn app.main:app --
 | POST | `/sessions/{id}/recording` | Upload one recording as multipart field `file` |
 | POST | `/sessions/{id}/finish` | Save duration, notes, and local completion state |
 | GET | `/sessions/{id}` | Read saved metadata and upload confirmation |
+| POST | `/sessions/{id}/transcript` | Queue local transcription after the session is finished |
+| GET | `/sessions/{id}/transcript` | Read status, text, and timestamped segments |
+
+The extension starts transcription after a successful upload and polls for the result. The first request downloads the `base.en` model from Hugging Face into `backend/data/models/`; later requests reuse it offline. Processing runs in the background so the API can keep responding. If the server stops during transcription, the job is marked failed on restart and can be retried. Set `CONVERSATION_COACH_WHISPER_MODEL` to `tiny.en`, `base.en`, or `small.en` before starting the API to choose speed versus accuracy. CPU `int8` is used by default. A transcript can be empty when no clear speech is detected.
 
 Session requests require `X-Conversation-Coach-Client: extension`. This header blocks ordinary browser forms; it is not authentication against other programs running on the computer. Keep the server bound to `127.0.0.1`. Recording types are WebM, Ogg audio, and MP4 audio/video, up to 256 MiB. Retries using the same ID and recording bytes are accepted. A different recording for an existing ID is rejected.
 
-Metadata lives in `backend/data/sessions.sqlite3`, and recordings in `backend/data/recordings/`. Set `CONVERSATION_COACH_DATA_DIR` to use another local directory. This directory is ignored by Git. The API has no deletion endpoint yet; deleting a session in the extension deletes the browser copy only. To remove the API copy, stop the server and remove the corresponding local data manually. Back up anything you need to keep.
+Metadata and transcripts live in `backend/data/sessions.sqlite3`, and recordings in `backend/data/recordings/`. Set `CONVERSATION_COACH_DATA_DIR` to use another local directory. This directory is ignored by Git. The API has no deletion endpoint yet; deleting a session in the extension deletes the browser copy only. To remove the API copy, stop the server and remove the corresponding local data manually. Back up anything you need to keep.
 
 ## Tests
 

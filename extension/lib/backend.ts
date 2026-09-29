@@ -10,6 +10,22 @@ export interface RemoteSession {
   sha256: string | null;
 }
 
+export interface TranscriptSegment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+export interface RemoteTranscript {
+  session_id: string;
+  status: 'not_started' | 'queued' | 'running' | 'completed' | 'failed';
+  language: string | null;
+  text: string;
+  segments: TranscriptSegment[];
+  error: string | null;
+  updated_at: string | null;
+}
+
 interface UploadOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -43,6 +59,22 @@ async function request<T>(
     throw new Error(`The local Python API rejected the session: ${detail}`);
   }
   return payload as T;
+}
+
+export async function getTranscript(sessionId: string, options: UploadOptions = {}): Promise<RemoteTranscript> {
+  return request<RemoteTranscript>(`/sessions/${encodeURIComponent(sessionId)}/transcript`, { method: 'GET' }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
+}
+
+export async function startTranscript(sessionId: string, options: UploadOptions = {}): Promise<RemoteTranscript> {
+  return request<RemoteTranscript>(`/sessions/${encodeURIComponent(sessionId)}/transcript`, { method: 'POST' }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
 }
 
 export async function uploadSession(

@@ -1,21 +1,26 @@
-"""Local-only session API. No analysis or cloud upload happens here."""
+"""Local-only session and transcript API."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import secrets
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Literal
+from threading import Lock
+from typing import Annotated, Callable, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from app.transcription import transcribe_recording
 
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -27,6 +32,7 @@ MEDIA_EXTENSIONS = {
     "audio/mp4": "m4a",
     "video/mp4": "mp4",
 }
+logger = logging.getLogger(__name__)
 
 
 class SessionCreate(BaseModel):
@@ -57,6 +63,22 @@ class SessionRead(BaseModel):
     size_bytes: int | None
     sha256: str | None
     has_recording: bool
+
+
+class TranscriptSegment(BaseModel):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+    text: str
+
+
+class TranscriptRead(BaseModel):
+    session_id: UUID
+    status: Literal["not_started", "queued", "running", "completed", "failed"]
+    language: str | None = None
+    text: str = ""
+    segments: list[TranscriptSegment] = Field(default_factory=list)
+    error: str | None = None
+    updated_at: datetime | None = None
 
 
 def _require_client(x_conversation_coach_client: Annotated[str | None, Header()] = None) -> None:
@@ -92,9 +114,11 @@ def _get_session(db_path: Path, session_id: UUID) -> dict:
 def create_app(
     data_dir: Path | None = None,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
+    transcriber: Callable[[Path], dict] | None = None,
 ) -> FastAPI:
     storage = Path(data_dir or os.getenv("CONVERSATION_COACH_DATA_DIR", DEFAULT_DATA_DIR)).resolve()
     recordings = storage / "recordings"
+    models = storage / "models"
     recordings.mkdir(parents=True, exist_ok=True)
     db_path = storage / "sessions.sqlite3"
     with _connect(db_path) as connection:
@@ -114,6 +138,71 @@ def create_app(
                 sha256 TEXT
             )"""
         )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS transcripts (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+                recording_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL,
+                language TEXT,
+                text TEXT NOT NULL DEFAULT '',
+                segments_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            """UPDATE transcripts SET status = 'failed',
+                error = 'The server restarted during transcription. Retry transcription.',
+                updated_at = ? WHERE status IN ('queued', 'running')""",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+
+    recognize = transcriber or (lambda path: transcribe_recording(path, models))
+    recognition_lock = Lock()
+
+    def read_transcript_data(session_id: UUID) -> dict:
+        with _connect(db_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM transcripts WHERE session_id = ?", (str(session_id),)
+            ).fetchone()
+        if row is None:
+            return {"session_id": session_id, "status": "not_started"}
+        result = dict(row)
+        result["segments"] = json.loads(result.pop("segments_json"))
+        result.pop("recording_sha256")
+        return result
+
+    def run_transcription(session_id: UUID, digest: str, path: Path) -> None:
+        with recognition_lock:
+            with _connect(db_path) as connection:
+                connection.execute(
+                    "UPDATE transcripts SET status = 'running', updated_at = ? WHERE session_id = ? AND recording_sha256 = ?",
+                    (datetime.now(timezone.utc).isoformat(), str(session_id), digest),
+                )
+            try:
+                transcript = TranscriptRead(
+                    session_id=session_id, status="completed", **recognize(path)
+                )
+                with _connect(db_path) as connection:
+                    connection.execute(
+                        """UPDATE transcripts SET status = 'completed', language = ?, text = ?,
+                            segments_json = ?, error = NULL, updated_at = ?
+                            WHERE session_id = ? AND recording_sha256 = ?""",
+                        (
+                            transcript.language, transcript.text,
+                            json.dumps([segment.model_dump() for segment in transcript.segments]),
+                            datetime.now(timezone.utc).isoformat(), str(session_id), digest,
+                        ),
+                    )
+            except Exception:
+                logger.exception("Transcription failed for session %s", session_id)
+                with _connect(db_path) as connection:
+                    connection.execute(
+                        """UPDATE transcripts SET status = 'failed',
+                            error = 'Transcription failed. Check backend logs and retry.',
+                            updated_at = ? WHERE session_id = ? AND recording_sha256 = ?""",
+                        (datetime.now(timezone.utc).isoformat(), str(session_id), digest),
+                    )
 
     app = FastAPI(title="Conversation Coach Local API", version="0.1.0")
     app.add_middleware(
@@ -218,6 +307,44 @@ def create_app(
     @router.get("/sessions/{session_id}", response_model=SessionRead)
     def read_session(session_id: UUID) -> dict:
         return _get_session(db_path, session_id)
+
+    @router.get("/sessions/{session_id}/transcript", response_model=TranscriptRead)
+    def read_transcript(session_id: UUID) -> dict:
+        _get_session(db_path, session_id)
+        return read_transcript_data(session_id)
+
+    @router.post("/sessions/{session_id}/transcript", response_model=TranscriptRead)
+    def request_transcript(
+        session_id: UUID, background_tasks: BackgroundTasks, response: Response
+    ) -> dict:
+        session = _get_session(db_path, session_id)
+        if session["status"] != "completed" or not session["sha256"]:
+            raise HTTPException(status_code=409, detail="Finish an uploaded session before transcription.")
+        path = recordings / f"{session_id}.{MEDIA_EXTENSIONS[session['mime_type']]}"
+        if not path.is_file():
+            raise HTTPException(status_code=409, detail="The saved recording is missing.")
+
+        with _connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, recording_sha256 FROM transcripts WHERE session_id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if row is None or row["recording_sha256"] != session["sha256"] or row["status"] == "failed":
+                connection.execute(
+                    """INSERT INTO transcripts (session_id, recording_sha256, status, updated_at)
+                        VALUES (?, ?, 'queued', ?)
+                        ON CONFLICT(session_id) DO UPDATE SET
+                            recording_sha256 = excluded.recording_sha256,
+                            status = 'queued', language = NULL, text = '',
+                            segments_json = '[]', error = NULL, updated_at = excluded.updated_at""",
+                    (str(session_id), session["sha256"], datetime.now(timezone.utc).isoformat()),
+                )
+                background_tasks.add_task(run_transcription, session_id, session["sha256"], path)
+                response.status_code = 202
+            elif row["status"] in {"queued", "running"}:
+                response.status_code = 202
+        return read_transcript_data(session_id)
 
     app.include_router(router)
     return app

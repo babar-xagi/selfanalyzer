@@ -41,6 +41,7 @@ next-env.d.ts
 /extension/.wxt/
 /extension/.env*
 /extension/.npm-cache/
+/conversation-coach-*.zip
 
 # local Python backend state
 /backend/.venv/
