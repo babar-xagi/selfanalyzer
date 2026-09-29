@@ -18,4 +18,4 @@ Report observable behavior such as word count, pace, fillers, and pauses. Do not
 
 ## Current milestone
 
-Milestone 003 stores the selected practice focus in the extension origin. Microphone audio and optional webcam video are held only in the recording tab's memory until the user downloads or deletes them. It does not transmit or analyze media. The browser may show camera and microphone permission prompts after the corresponding user actions.
+Milestone 004 stores the selected practice focus, session metadata, notes, recording chunks, and finished media in the extension's browser origin. The chunks are removed when a session is finalized or deleted. Nothing is transmitted or analyzed. Deleting a session removes its metadata, finished media, and remaining chunks from the app's IndexedDB. Browser storage can be cleared or evicted, so users should download recordings they need to keep. The browser may show camera and microphone permission prompts after the corresponding user actions.
