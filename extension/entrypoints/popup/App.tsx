@@ -1,10 +1,19 @@
 import { useState } from 'react';
+import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 
 export function App() {
-  const [started, setStarted] = useState(false);
   const focus = getPracticeFocus();
+  const [launchError, setLaunchError] = useState('');
+
+  async function openRecordingTab() {
+    try {
+      await browser.tabs.create({ url: browser.runtime.getURL('/record.html') });
+    } catch {
+      setLaunchError('Could not open the recording tab. Please try again.');
+    }
+  }
 
   return (
     <main className="min-h-[420px] w-[340px] bg-[#10171d] p-5 text-slate-100">
@@ -19,13 +28,11 @@ export function App() {
       <section aria-live="polite" className="mt-7 rounded-2xl border border-white/10 bg-white/5 p-5">
         <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
           <span className="h-2 w-2 rounded-full bg-emerald-300" />
-          {started ? 'Session preview active' : 'Ready for practice'}
+          Ready for practice
         </div>
-        <h2 className="mt-3 text-lg font-semibold">{started ? 'You are ready to speak' : 'Your next conversation starts here'}</h2>
+        <h2 className="mt-3 text-lg font-semibold">Your next conversation starts here</h2>
         <p className="mt-2 text-sm leading-6 text-slate-300">
-          {started
-            ? 'This preview does not record audio yet. Microphone recording is the next milestone.'
-            : 'Choose one thing to focus on, then start a practice session.'}
+          Record your own voice, then listen back and choose what to practice next.
         </p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">
           Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong>
@@ -33,9 +40,10 @@ export function App() {
       </section>
 
       <div className="mt-5">
-        <PrimaryButton onClick={() => setStarted((current) => !current)}>
-          {started ? 'End Session' : 'Start Session'}
+        <PrimaryButton onClick={openRecordingTab}>
+          Start Session
         </PrimaryButton>
+        {launchError && <p className="mt-3 text-sm text-red-300" role="alert">{launchError}</p>}
       </div>
 
       <button

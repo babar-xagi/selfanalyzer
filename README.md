@@ -2,7 +2,7 @@
 
 Conversation Coach helps English learners turn real speaking practice into useful feedback for their next conversation.
 
-**Current status:** Milestone 000 (product foundation) is complete. Milestone 001 extension source has passed type-checking, a production build, and a browser UI check; manual loading as a Chrome extension remains to be checked. Recording and AI analysis are future milestones.
+**Current status:** The product foundation and extension UI are implemented. Milestone 002 adds local microphone recording. AI analysis and video are future milestones. See the [roadmap](docs/roadmap.md) for verification status.
 
 ## Who it is for
 
@@ -10,7 +10,9 @@ English learners who already practice speaking with other people online and want
 
 ## Current extension
 
-The Chrome extension has a React popup with a Start Session button and an options page for choosing a practice focus. Start Session currently changes the popup's local UI state; it does not access the microphone or save a recording.
+The Chrome extension has a React popup with a Start Session button and an options page for choosing a practice focus. Start Session opens a dedicated recording tab. Click **Start Recording** there to request microphone access, then **Stop Recording** to play back, download, or delete the audio. The recorder uses only your microphone; it does not capture other participants or upload anything.
+
+Keep the recording tab open until you have downloaded the file. The recording exists only in that tab's memory and is lost if the tab closes or reloads. Persistent sessions are planned for a later milestone.
 
 ### Run locally
 
@@ -28,7 +30,7 @@ npm run typecheck
 npm run build
 ```
 
-To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. Open the popup, click **Start Session**, then open **Settings** and choose a focus. Reload the popup to confirm the focus is remembered.
+To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. Open the popup, click **Start Session**, and record a few minutes of speech in the new tab. Stop, play the recording, download it, and delete the in-tab copy. Also deny microphone permission once to check the error message. Open **Settings** and choose a focus, then reopen the popup to confirm it is remembered.
 
 ## Project documents
 

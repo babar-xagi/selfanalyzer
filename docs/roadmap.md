@@ -6,7 +6,7 @@ The [blueprint](../project.md) describes the intended sequence. Status here refl
 | --- | --- | --- |
 | 000 | Product vision, architecture, privacy rules, and roadmap | Complete |
 | 001 | Installable WXT/React/TypeScript extension with popup, Start button, and settings | Type-check, build, and browser UI check passed; Chrome extension load pending |
-| 002 | Reliable microphone recording, playback, save, and delete | Planned |
+| 002 | Local microphone recording, timer, playback, download, and delete | Implemented; type-check, build, 2m21s generated-audio playback, delete, and denied-permission checks passed. Real Chrome microphone and completed download checks pending |
 | 003 | Optional webcam preview and recording | Planned |
 | 004 | Session lifecycle and device/error handling | Planned |
 | 005 | FastAPI session and upload API | Planned |
@@ -14,6 +14,6 @@ The [blueprint](../project.md) describes the intended sequence. Status here refl
 | 007–010 | Grammar, natural English, speaking analytics, and full report | Planned; MVP 1.0 boundary |
 | 011–020 | Video signals, history, storage, progress, practice, and production features | Later |
 
-## Next milestone: 002
+## Milestone 002 acceptance check
 
-Request microphone access after a user action, record only the user's microphone, show a running timer and Stop control, and provide playback, save, and delete. Test several-minute recordings and permission denial in Chrome before moving to webcam capture.
+Load the extension in Chrome, record for several minutes, stop, play the audio, download it, and delete the in-tab copy. Check microphone denial and a disconnected device. Complete this check before adding webcam capture in Milestone 003.

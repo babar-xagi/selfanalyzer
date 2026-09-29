@@ -18,4 +18,4 @@ Report observable behavior such as word count, pace, fillers, and pauses. Do not
 
 ## Current milestone
 
-Milestone 001 stores only the selected practice focus in the extension origin. It does not record, transmit, or analyze media.
+Milestone 002 stores the selected practice focus in the extension origin. Microphone audio is held only in the recording tab's memory until the user downloads or deletes it. It does not transmit or analyze media. The browser may show a microphone permission prompt after the user clicks Start Recording.
