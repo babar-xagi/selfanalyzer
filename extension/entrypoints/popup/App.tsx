@@ -32,7 +32,7 @@ export function App() {
         </div>
         <h2 className="mt-3 text-lg font-semibold">Your next conversation starts here</h2>
         <p className="mt-2 text-sm leading-6 text-slate-300">
-          Record your own voice, then listen back and choose what to practice next.
+          Record an Episoden call with both voices and the screen, then replay it and review your English.
         </p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">
           Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong>

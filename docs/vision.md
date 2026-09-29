@@ -12,11 +12,11 @@ The initial user is an English learner who already practices speaking through on
 
 ## Product goal
 
-Capture the user's own speaking, produce a readable transcript and concrete English feedback, suggest focused practice, and eventually track improvement over repeated sessions.
+Record an Episoden conversation for download and replay, then analyze the user's own speech with a readable transcript and concrete English feedback.
 
 ## MVP
 
-A Chrome extension records the user's microphone and optional webcam, sends a finished session for transcription and analysis, and shows a report with grammar corrections, more natural alternatives, and observable speaking metrics such as pace, fillers, and pauses.
+A Chrome extension records the selected Episoden tab's screen and audio together with the user's microphone. The complete call stays available for download and replay. A separate microphone recording can be sent to the local API for transcription and grammar feedback without attributing the partner's speech to the user.
 
 ## Success criteria
 
@@ -24,4 +24,4 @@ The user can finish a real conversation and identify at least one specific chang
 
 ## Initial non-goals
 
-Live correction, recording other participants, broad platform integrations, custom speech models, emotion inference, payments, social features, and a native app are outside the first MVP.
+Live correction, automatic capture without a browser sharing prompt, broad platform integrations, custom speech models, emotion inference, payments, social features, and a native app are outside the first MVP.

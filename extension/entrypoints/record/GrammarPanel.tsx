@@ -10,7 +10,7 @@ function categoryLabel(category: string): string {
   return category.replaceAll('_', ' ');
 }
 
-export function GrammarPanel({ sessionId }: { sessionId: string }) {
+export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onReplayAt: (milliseconds: number) => void }) {
   const [review, setReview] = useState<RemoteGrammar | null>(null);
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
@@ -62,7 +62,7 @@ export function GrammarPanel({ sessionId }: { sessionId: string }) {
         review.corrections.length ? <ol className="mt-5 space-y-4">
           {review.corrections.map((correction, index) => (
             <li key={`${correction.timestamp_ms}-${index}`} className="rounded-xl border border-white/10 bg-slate-900/60 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300">{timestamp(correction.timestamp_ms)} · {categoryLabel(correction.category)}</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300"><button className="underline" type="button" onClick={() => onReplayAt(correction.timestamp_ms)} aria-label={`Replay correction from ${timestamp(correction.timestamp_ms)}`}>{timestamp(correction.timestamp_ms)}</button> · {categoryLabel(correction.category)}</p>
               <p className="mt-3 text-sm text-red-200"><span className="font-semibold">You said:</span> {correction.original}</p>
               <p className="mt-2 text-sm text-emerald-200"><span className="font-semibold">Correction:</span> {correction.corrected}</p>
               <p className="mt-2 text-sm text-sky-200"><span className="font-semibold">Natural alternative:</span> {correction.natural_alternative}</p>

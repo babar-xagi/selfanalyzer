@@ -7,6 +7,7 @@
     "dev": "wxt",
     "build": "wxt build",
     "typecheck": "tsc --noEmit",
+    "test:sessions": "node tests/sessions.test.mjs",
     "test:backend-live": "node tests/backend-live.mjs",
     "postinstall": "wxt prepare"
   },
@@ -19,6 +20,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@wxt-dev/module-react": "^1.2.2",
+    "fake-indexeddb": "^6.2.5",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "wxt": "^0.21.4"

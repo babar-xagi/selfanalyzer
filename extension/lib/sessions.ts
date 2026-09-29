@@ -15,13 +15,16 @@ export interface Session {
   notes: string;
   error: string | null;
   uploadedAt?: number | null;
+  captureKind?: 'microphone' | 'episoden-tab';
+  analysisMimeType?: string | null;
+  analysisSizeBytes?: number;
 }
 
 interface Chunk { sessionId: string; index: number; blob: Blob }
 interface Recording { sessionId: string; blob: Blob }
 
 const DB_NAME = 'conversation-coach-sessions';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 export const RECOVERY_AGE_MS = 30_000;
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -31,9 +34,11 @@ function database(): Promise<IDBDatabase> {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
-        db.createObjectStore('sessions', { keyPath: 'id' });
-        db.createObjectStore('recordings', { keyPath: 'sessionId' });
-        db.createObjectStore('chunks', { keyPath: ['sessionId', 'index'] });
+        if (!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('recordings')) db.createObjectStore('recordings', { keyPath: 'sessionId' });
+        if (!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks', { keyPath: ['sessionId', 'index'] });
+        if (!db.objectStoreNames.contains('analysisRecordings')) db.createObjectStore('analysisRecordings', { keyPath: 'sessionId' });
+        if (!db.objectStoreNames.contains('analysisChunks')) db.createObjectStore('analysisChunks', { keyPath: ['sessionId', 'index'] });
       };
       request.onsuccess = () => {
         const db = request.result;
@@ -61,12 +66,12 @@ function result<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-export async function createSession(mode: CaptureMode): Promise<Session> {
+export async function createSession(mode: CaptureMode, captureKind: Session['captureKind'] = 'microphone'): Promise<Session> {
   const now = Date.now();
   const session: Session = {
     id: crypto.randomUUID(), mode, status: 'preparing', createdAt: now,
     startedAt: null, endedAt: null, durationMs: 0, updatedAt: now,
-    mimeType: null, sizeBytes: 0, notes: '', error: null,
+    mimeType: null, sizeBytes: 0, notes: '', error: null, captureKind,
   };
   const tx = (await database()).transaction('sessions', 'readwrite');
   const done = complete(tx);
@@ -103,6 +108,13 @@ export async function appendChunk(sessionId: string, index: number, blob: Blob):
   await done;
 }
 
+export async function appendAnalysisChunk(sessionId: string, index: number, blob: Blob): Promise<void> {
+  const tx = (await database()).transaction('analysisChunks', 'readwrite');
+  const done = complete(tx);
+  tx.objectStore('analysisChunks').put({ sessionId, index, blob } satisfies Chunk);
+  await done;
+}
+
 export async function listSessions(): Promise<Session[]> {
   const tx = (await database()).transaction('sessions', 'readonly');
   const done = complete(tx);
@@ -119,11 +131,19 @@ export async function getRecording(sessionId: string): Promise<Blob | null> {
   return recording?.blob ?? null;
 }
 
-async function getChunks(sessionId: string): Promise<Chunk[]> {
-  const tx = (await database()).transaction('chunks', 'readonly');
+export async function getAnalysisRecording(sessionId: string): Promise<Blob | null> {
+  const tx = (await database()).transaction('analysisRecordings', 'readonly');
+  const done = complete(tx);
+  const recording = await result(tx.objectStore('analysisRecordings').get(sessionId) as IDBRequest<Recording | undefined>);
+  await done;
+  return recording?.blob ?? null;
+}
+
+async function getChunks(sessionId: string, storeName: 'chunks' | 'analysisChunks' = 'chunks'): Promise<Chunk[]> {
+  const tx = (await database()).transaction(storeName, 'readonly');
   const done = complete(tx);
   const range = IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]);
-  const chunks = await result(tx.objectStore('chunks').getAll(range) as IDBRequest<Chunk[]>);
+  const chunks = await result(tx.objectStore(storeName).getAll(range) as IDBRequest<Chunk[]>);
   await done;
   return chunks.sort((a, b) => a.index - b.index);
 }
@@ -134,10 +154,13 @@ export async function finishSession(
   durationMs: number,
   mimeType: string,
   error: string | null = null,
+  analysisMimeType: string | null = null,
 ): Promise<Session> {
   const chunks = await getChunks(sessionId);
   const blob = new Blob(chunks.map((chunk) => chunk.blob), { type: mimeType });
-  const tx = (await database()).transaction(['sessions', 'recordings', 'chunks'], 'readwrite');
+  const analysisChunks = await getChunks(sessionId, 'analysisChunks');
+  const analysisBlob = new Blob(analysisChunks.map((chunk) => chunk.blob), { type: analysisMimeType ?? 'audio/webm' });
+  const tx = (await database()).transaction(['sessions', 'recordings', 'chunks', 'analysisRecordings', 'analysisChunks'], 'readwrite');
   const done = complete(tx);
   const sessions = tx.objectStore('sessions');
   let finished: Session | null = null;
@@ -154,15 +177,20 @@ export async function finishSession(
       endedAt: Date.now(), durationMs,
       mimeType, sizeBytes: blob.size, updatedAt: Date.now(),
       error: blob.size ? error : error ?? 'No media was captured.',
+      analysisMimeType: analysisBlob.size ? (analysisMimeType ?? 'audio/webm') : null,
+      analysisSizeBytes: analysisBlob.size,
     };
     sessions.put(finished);
     if (blob.size) tx.objectStore('recordings').put({ sessionId, blob } satisfies Recording);
-    const range = IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]);
-    const cursorRequest = tx.objectStore('chunks').openCursor(range);
-    cursorRequest.onsuccess = () => {
-      const cursor = cursorRequest.result;
-      if (cursor) { cursor.delete(); cursor.continue(); }
-    };
+    if (analysisBlob.size) tx.objectStore('analysisRecordings').put({ sessionId, blob: analysisBlob } satisfies Recording);
+    for (const storeName of ['chunks', 'analysisChunks'] as const) {
+      const range = IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]);
+      const cursorRequest = tx.objectStore(storeName).openCursor(range);
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (cursor) { cursor.delete(); cursor.continue(); }
+      };
+    }
   };
   await done;
   if (!finished) throw new Error('Session was not found.');
@@ -187,15 +215,18 @@ export async function recoverInterruptedSessions(): Promise<Session[]> {
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const tx = (await database()).transaction(['sessions', 'recordings', 'chunks'], 'readwrite');
+  const tx = (await database()).transaction(['sessions', 'recordings', 'chunks', 'analysisRecordings', 'analysisChunks'], 'readwrite');
   const done = complete(tx);
   tx.objectStore('sessions').delete(sessionId);
   tx.objectStore('recordings').delete(sessionId);
-  const range = IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]);
-  const cursorRequest = tx.objectStore('chunks').openCursor(range);
-  cursorRequest.onsuccess = () => {
-    const cursor = cursorRequest.result;
-    if (cursor) { cursor.delete(); cursor.continue(); }
-  };
+  tx.objectStore('analysisRecordings').delete(sessionId);
+  for (const storeName of ['chunks', 'analysisChunks'] as const) {
+    const range = IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]);
+    const cursorRequest = tx.objectStore(storeName).openCursor(range);
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (cursor) { cursor.delete(); cursor.continue(); }
+    };
+  }
   await done;
 }

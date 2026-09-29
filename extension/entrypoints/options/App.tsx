@@ -24,7 +24,7 @@ export function App() {
 
         <section className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6">
           <label htmlFor="practice-focus" className="block text-base font-medium">Practice focus</label>
-          <p className="mt-1 text-sm leading-6 text-slate-400">This focus appears in your recording tab. AI coaching arrives in a later milestone.</p>
+          <p className="mt-1 text-sm leading-6 text-slate-400">This focus appears in your recording tab. Afterward, you can replay the call and analyze your voice.</p>
           <select
             id="practice-focus"
             className="mt-5 w-full rounded-xl border border-white/15 bg-[#18232c] px-4 py-3 text-sm text-white"

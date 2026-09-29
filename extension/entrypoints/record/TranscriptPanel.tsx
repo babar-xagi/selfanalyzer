@@ -7,7 +7,7 @@ function timestamp(milliseconds: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-export function TranscriptPanel({ sessionId }: { sessionId: string }) {
+export function TranscriptPanel({ sessionId, onReplayAt }: { sessionId: string; onReplayAt: (milliseconds: number) => void }) {
   const [transcript, setTranscript] = useState<RemoteTranscript | null>(null);
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
@@ -58,7 +58,7 @@ export function TranscriptPanel({ sessionId }: { sessionId: string }) {
         transcript.segments.length ? <ol className="mt-4 space-y-3">
           {transcript.segments.map((segment, index) => (
             <li key={`${segment.start_ms}-${index}`} className="flex gap-4 rounded-lg bg-slate-900/60 p-3 text-sm">
-              <span className="shrink-0 font-mono text-emerald-300">{timestamp(segment.start_ms)}</span>
+              <button className="shrink-0 self-start font-mono text-emerald-300 underline" type="button" onClick={() => onReplayAt(segment.start_ms)} aria-label={`Replay from ${timestamp(segment.start_ms)}`}>{timestamp(segment.start_ms)}</button>
               <span className="text-slate-100">{segment.text}</span>
             </li>
           ))}
@@ -72,6 +72,6 @@ export function TranscriptPanel({ sessionId }: { sessionId: string }) {
         }}>Retry transcription</button>
       </>}
     </section>
-    {transcript?.status === 'completed' && <GrammarPanel sessionId={sessionId} />}
+    {transcript?.status === 'completed' && <GrammarPanel sessionId={sessionId} onReplayAt={onReplayAt} />}
   </>;
 }

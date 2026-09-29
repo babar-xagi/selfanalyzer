@@ -44,3 +44,17 @@ const grammar = await getGrammar(session.id, { fetchImpl: browserStyleFetch });
 assert.equal(grammar.session_id, session.id);
 assert.equal(grammar.status, 'not_started');
 console.log(`TypeScript client uploaded session ${session.id} (${remote.size_bytes} bytes).`);
+
+const callSession = {
+  ...session,
+  id: randomUUID(),
+  mode: 'video',
+  captureKind: 'episoden-tab',
+  notes: 'Full call stays in the browser; only this microphone track is uploaded.',
+};
+const ownVoice = new Blob(['isolated microphone audio'], { type: 'audio/webm' });
+const callRemote = await uploadSession(callSession, ownVoice, { fetchImpl: browserStyleFetch });
+assert.equal(callRemote.session_id, callSession.id);
+assert.equal(callRemote.size_bytes, ownVoice.size);
+assert.equal(callRemote.has_recording, true);
+console.log(`Episoden session uploaded only its ${ownVoice.size}-byte microphone track.`);

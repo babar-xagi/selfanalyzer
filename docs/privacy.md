@@ -2,11 +2,11 @@
 
 ## Capture scope
 
-The first recording implementation will capture only the user's microphone and, if they choose, their webcam. It must not capture another participant's audio or video automatically. A future feature that changes that scope requires explicit user controls and a review of platform rules and consent requirements.
+The Episoden recording mode captures the tab screen and tab audio, including the partner, only after the user explicitly selects that tab in Chrome's sharing picker and enables tab audio. The user should ask their partner before recording. The microphone is recorded separately so analysis can focus on the user's speech. A microphone-only mode remains available.
 
 ## Permission and control
 
-Ask for camera permission only when the user enables the preview, and for microphone permission only when they start a recording. Show a clear recording state and an obvious Stop control. Let the user play back and delete a recording before any upload. Do not request media permissions in the extension foundation.
+Ask for tab sharing and microphone permission only when the user starts a recording. Show a clear recording state and an obvious Stop control. Let the user play back, download, and delete a recording before analysis. Never start tab capture automatically.
 
 ## Data handling
 
@@ -18,4 +18,4 @@ Report observable behavior such as word count, pace, fillers, and pauses. Do not
 
 ## Current milestone
 
-Milestone 007 keeps the selected practice focus, session metadata, notes, recording chunks, and finished media in the extension's browser origin. The chunks are removed when a session is finalized or deleted. Clicking Send to local API copies the recording and notes to FastAPI at `127.0.0.1:8000`, which stores them in local SQLite and files. FastAPI transcribes the recording with a local speech model and stores the transcript in the same local SQLite database. A local language model at `127.0.0.1:8081` reviews transcript text and returns grammar suggestions, which are also stored in SQLite. Model files are downloaded from Hugging Face on setup or first use; recordings and transcripts are not sent to Hugging Face. Deleting a session in the extension removes its browser copy but does not remove the API copy; the API has no deletion endpoint yet. Browser storage can be cleared or evicted, so users should download recordings they need to keep. The browser may show camera and microphone permission prompts after the corresponding user actions.
+The extension keeps session metadata, notes, recording chunks, the finished full-call video, and a separate microphone recording in its browser origin. Chunks are removed when a session is finalized or deleted. Clicking Analyze my voice copies only the microphone recording and notes to FastAPI at `127.0.0.1:8000`. FastAPI transcribes that audio locally and stores the transcript in SQLite. A local language model at `127.0.0.1:8081` reviews transcript text and stores grammar suggestions. Model files are downloaded from Hugging Face during setup or first use; recordings and transcripts are not sent there. Deleting a session in the extension removes its browser copies but does not remove the API copy; the API has no deletion endpoint yet. Browser storage can be cleared or evicted, so users should download full-call recordings they need to keep.

@@ -1,6 +1,6 @@
 # Local Python API
 
-The extension sends a saved session and recording to Python. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
+For new Episoden call recordings, the extension sends only the separate microphone audio to Python; the complete call video remains in the browser for replay and download. The API transcribes the user's English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
 
 ## Run on Windows
 

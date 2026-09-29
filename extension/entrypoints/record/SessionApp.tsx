@@ -4,14 +4,14 @@ import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import { uploadSession } from '../../lib/backend';
 import { TranscriptPanel } from './TranscriptPanel';
 import {
-  appendChunk, createSession, deleteSession, finishSession, getRecording,
+  appendAnalysisChunk, appendChunk, createSession, deleteSession, finishSession,
+  getAnalysisRecording, getRecording,
   listSessions, recoverInterruptedSessions, updateSession,
   type CaptureMode, type Session, type SessionStatus,
 } from '../../lib/sessions';
 
 type ViewStatus = 'idle' | SessionStatus;
-type CameraStatus = 'off' | 'requesting' | 'ready';
-type DeviceName = 'camera' | 'microphone';
+type DeviceName = 'microphone';
 
 function duration(milliseconds: number): string {
   const seconds = Math.floor(milliseconds / 1000);
@@ -25,7 +25,7 @@ function duration(milliseconds: number): string {
 function deviceError(error: unknown, device: DeviceName): string {
   if (error instanceof DOMException) {
     if (['NotAllowedError', 'PermissionDeniedError'].includes(error.name))
-      return `${device === 'camera' ? 'Camera' : 'Microphone'} access was denied. Allow it in browser settings and try again.`;
+      return 'Microphone access was denied. Allow it in browser settings and try again.';
     if (['NotFoundError', 'DevicesNotFoundError'].includes(error.name))
       return `No ${device} was found. Connect one and try again.`;
     if (['NotReadableError', 'TrackStartError'].includes(error.name))
@@ -55,8 +55,7 @@ function extension(mimeType: string, mode: CaptureMode): string {
 const activeStatuses: ViewStatus[] = ['preparing', 'recording', 'processing'];
 
 export function App() {
-  const [mode, setMode] = useState<CaptureMode>('audio');
-  const [cameraStatus, setCameraStatus] = useState<CameraStatus>('off');
+  const [mode, setMode] = useState<CaptureMode>('video');
   const [status, setStatus] = useState<ViewStatus>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -67,9 +66,12 @@ export function App() {
   const [notice, setNotice] = useState('');
   const [uploading, setUploading] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const cameraRef = useRef<MediaStream | null>(null);
+  const analysisRecorderRef = useRef<MediaRecorder | null>(null);
+  const displayRef = useRef<MediaStream | null>(null);
+  const mixedRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
-  const previewRef = useRef<HTMLVideoElement | null>(null);
+  const playbackRef = useRef<HTMLMediaElement | null>(null);
   const urlRef = useRef<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const selectionTokenRef = useRef(0);
@@ -77,17 +79,16 @@ export function App() {
   const mountedRef = useRef(false);
   const focus = getPracticeFocus();
 
-  function releaseCamera() {
-    stopStream(cameraRef.current);
-    cameraRef.current = null;
-    if (previewRef.current) previewRef.current.srcObject = null;
-    if (mountedRef.current) setCameraStatus('off');
-  }
-
   function releaseStreams() {
     stopStream(microphoneRef.current);
     microphoneRef.current = null;
-    releaseCamera();
+    stopStream(displayRef.current);
+    displayRef.current = null;
+    stopStream(mixedRef.current);
+    mixedRef.current = null;
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
   }
 
   function clearPlayback() {
@@ -128,8 +129,14 @@ export function App() {
         recorder.onerror = null;
         if (recorder.state !== 'inactive') recorder.stop();
       }
-      stopStream(microphoneRef.current);
-      stopStream(cameraRef.current);
+      const analysisRecorder = analysisRecorderRef.current;
+      if (analysisRecorder) {
+        analysisRecorder.ondataavailable = null;
+        analysisRecorder.onstop = null;
+        analysisRecorder.onerror = null;
+        if (analysisRecorder.state !== 'inactive') analysisRecorder.stop();
+      }
+      releaseStreams();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
     };
   }, []);
@@ -147,71 +154,93 @@ export function App() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [status]);
 
-  useEffect(() => {
-    const preview = previewRef.current;
-    if (preview && cameraStatus === 'ready') {
-      preview.srcObject = cameraRef.current;
-      void preview.play().catch(() => setError('Camera preview could not play. Check browser media settings.'));
-    }
-    return () => { if (preview) preview.srcObject = null; };
-  }, [cameraStatus]);
-
-  async function enableCamera() {
-    setError(''); setNotice(''); setCameraStatus('requesting');
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus('off'); setError('This browser does not support camera preview.'); return;
-    }
-    try {
-      const camera = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (!mountedRef.current) { stopStream(camera); return; }
-      cameraRef.current = camera;
-      for (const track of camera.getVideoTracks()) {
-        track.addEventListener('ended', () => {
-          if (recorderRef.current?.state === 'recording') return;
-          releaseCamera();
-          setError('The camera disconnected. Reconnect it and enable the preview again.');
-        }, { once: true });
-      }
-      setCameraStatus('ready');
-    } catch (cause) {
-      if (mountedRef.current) { setCameraStatus('off'); setError(deviceError(cause, 'camera')); }
-    }
-  }
-
   async function startRecording() {
     setError(''); setNotice(''); setElapsedMs(0);
-    clearPlayback(); setSelected(null); setNotes('');
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       setError('This browser does not support recording. Try a recent version of Chrome.'); return;
     }
-    if (mode === 'video' && cameraRef.current?.getVideoTracks()[0]?.readyState !== 'live') {
-      releaseCamera(); setError('Enable the camera preview before recording video.'); return;
+    if (mode === 'video' && !navigator.mediaDevices.getDisplayMedia) {
+      setError('This browser cannot capture a tab. Use a recent version of Chrome.'); return;
+    }
+
+    setStatus('preparing');
+    if (mode === 'video') {
+      try {
+        audioContextRef.current = new AudioContext();
+        // Request screen sharing directly from the button click. Chrome requires
+        // transient user activation, so no database await may precede this call.
+        const display = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface: 'browser' },
+          audio: { suppressLocalAudioPlayback: false } as MediaTrackConstraints,
+        });
+        const videoTrack = display.getVideoTracks()[0];
+        if (videoTrack?.getSettings().displaySurface !== 'browser') {
+          stopStream(display);
+          throw new Error('Choose the Episoden Chrome tab, not a window or entire screen.');
+        }
+        if (!videoTrack || !display.getAudioTracks().length) {
+          stopStream(display);
+          throw new Error('Choose the Episoden Chrome tab and turn on Share tab audio.');
+        }
+        if (!mountedRef.current) { stopStream(display); return; }
+        displayRef.current = display;
+      } catch (cause) {
+        releaseStreams();
+        if (mountedRef.current) {
+          setStatus('idle');
+          setError(cause instanceof Error && !(cause instanceof DOMException) ? cause.message : 'Tab sharing was cancelled or denied. Choose the Episoden tab and enable tab audio.');
+        }
+        return;
+      }
     }
 
     let session: Session;
-    try { session = await createSession(mode); }
-    catch { setError('Local storage is unavailable. Free space or enable browser storage, then try again.'); return; }
+    try { session = await createSession(mode, mode === 'video' ? 'episoden-tab' : 'microphone'); }
+    catch {
+      releaseStreams(); setStatus('idle');
+      setError('Local storage is unavailable. Free space or enable browser storage, then try again.');
+      return;
+    }
     activeIdRef.current = session.id;
-    setStatus('preparing');
+    clearPlayback(); setSelected(null); setNotes('');
     await refreshSessions();
 
     try {
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true }, video: false });
       if (!mountedRef.current) { stopStream(microphone); return; }
-      const videoTracks = mode === 'video' ? cameraRef.current?.getVideoTracks() ?? [] : [];
-      if (mode === 'video' && videoTracks[0]?.readyState !== 'live') {
-        stopStream(microphone);
-        throw new Error('The camera disconnected. Enable the preview and try again.');
-      }
       microphoneRef.current = microphone;
-      const recorder = new MediaRecorder(new MediaStream([...videoTracks, ...microphone.getAudioTracks()]), recorderOptions(mode));
+      let recordingStream: MediaStream = microphone;
+      if (mode === 'video') {
+        const display = displayRef.current;
+        const videoTrack = display?.getVideoTracks()[0];
+        const tabAudioTrack = display?.getAudioTracks()[0];
+        if (!display || !videoTrack || !tabAudioTrack || videoTrack.readyState !== 'live' || tabAudioTrack.readyState !== 'live')
+          throw new Error('The Episoden tab share stopped. Start again and choose the tab.');
+        const context = audioContextRef.current;
+        if (!context || context.state === 'closed') throw new Error('Audio mixing could not start. Try recording again.');
+        const destination = context.createMediaStreamDestination();
+        context.createMediaStreamSource(display).connect(destination);
+        context.createMediaStreamSource(microphone).connect(destination);
+        if (context.state !== 'running') await context.resume();
+        if (context.state !== 'running') throw new Error('Audio mixing could not start. Try recording again.');
+        recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
+        mixedRef.current = recordingStream;
+      }
+      const recorder = new MediaRecorder(recordingStream, recorderOptions(mode));
       recorderRef.current = recorder;
+      const analysisRecorder = mode === 'video' ? new MediaRecorder(microphone, recorderOptions('audio')) : null;
+      analysisRecorderRef.current = analysisRecorder;
       const mimeType = recorder.mimeType || (mode === 'video' ? 'video/webm' : 'audio/webm');
+      const analysisMimeType = analysisRecorder?.mimeType || null;
       const captured: Blob[] = [];
       let nextChunk = 0;
+      let nextAnalysisChunk = 0;
       let pendingWrite: Promise<void> = Promise.resolve();
+      let pendingAnalysisWrite: Promise<void> = Promise.resolve();
       let interruption: string | null = null;
       let storageError: string | null = null;
+      let resolveAnalysisStopped = () => {};
+      const analysisStopped = analysisRecorder ? new Promise<void>((resolve) => { resolveAnalysisStopped = resolve; }) : Promise.resolve();
 
       const interrupt = (reason: string) => {
         interruption = reason;
@@ -220,8 +249,25 @@ export function App() {
       for (const track of microphone.getAudioTracks()) {
         track.addEventListener('ended', () => interrupt('The microphone disconnected.'), { once: true });
       }
-      for (const track of videoTracks) {
-        track.addEventListener('ended', () => interrupt('The camera disconnected.'), { once: true });
+      for (const track of displayRef.current?.getTracks() ?? []) {
+        track.addEventListener('ended', () => interrupt('The Episoden tab share stopped.'), { once: true });
+      }
+      if (analysisRecorder) {
+        analysisRecorder.ondataavailable = (event) => {
+          if (!event.data.size) return;
+          const index = nextAnalysisChunk++;
+          if (!storageError) {
+            pendingAnalysisWrite = pendingAnalysisWrite.then(() => appendAnalysisChunk(session.id, index, event.data)).catch(() => {
+              storageError = 'Browser storage could not save your voice recording. Download the full session before closing this tab.';
+              if (recorder.state === 'recording') recorder.stop();
+            });
+          }
+        };
+        analysisRecorder.onerror = () => interrupt('Your microphone recording stopped unexpectedly.');
+        analysisRecorder.onstop = () => {
+          analysisRecorderRef.current = null;
+          resolveAnalysisStopped();
+        };
       }
       recorder.ondataavailable = (event) => {
         if (!event.data.size) return;
@@ -237,6 +283,8 @@ export function App() {
       recorder.onerror = () => interrupt('The recorder failed.');
       recorder.onstop = () => {
         void (async () => {
+          if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
+          await analysisStopped;
           releaseStreams();
           recorderRef.current = null;
           activeIdRef.current = null;
@@ -245,9 +293,10 @@ export function App() {
           try {
             await updateSession(session.id, { status: 'processing' });
             await pendingWrite;
+            await pendingAnalysisWrite;
             const finished = await finishSession(
               session.id, interruption || storageError ? 'interrupted' : 'completed',
-              measuredMs, mimeType, interruption ?? storageError,
+              measuredMs, mimeType, interruption ?? storageError, analysisMimeType,
             );
             if (!mountedRef.current) return;
             await refreshSessions();
@@ -275,11 +324,15 @@ export function App() {
       };
 
       await updateSession(session.id, { status: 'recording', startedAt: Date.now(), mimeType });
+      analysisRecorder?.start(1000);
       recorder.start(1000);
       startedRef.current = performance.now();
       setStatus('recording');
       await refreshSessions();
     } catch (cause) {
+      const analysisRecorder = analysisRecorderRef.current;
+      if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
+      analysisRecorderRef.current = null;
       releaseStreams();
       recorderRef.current = null;
       activeIdRef.current = null;
@@ -333,20 +386,35 @@ export function App() {
     setNotice('Download requested. Check browser downloads for the file.');
   }
 
+  function replayAt(milliseconds: number) {
+    const player = playbackRef.current;
+    if (!player) return;
+    player.currentTime = Math.max(0, milliseconds / 1000);
+    player.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    void player.play().catch(() => setNotice('Select Play in the recording to hear this moment.'));
+  }
+
   async function sendToLocalApi() {
     if (!selected || !recordingUrl || uploading) return;
     const session = { ...selected, notes };
     setError(''); setNotice(''); setUploading(true);
     try {
-      let blob: Blob | null = null;
-      try { blob = await getRecording(session.id); }
-      catch { /* In-memory playback can still be sent when local storage failed. */ }
       let recording: Blob;
-      if (blob) recording = blob;
-      else recording = await fetch(recordingUrl).then((response) => response.blob());
+      if (session.captureKind === 'episoden-tab') {
+        const ownVoice = await getAnalysisRecording(session.id);
+        if (!ownVoice) throw new Error('Your voice track was not saved. You can still replay and download the full call.');
+        recording = ownVoice;
+      } else {
+        let blob: Blob | null = null;
+        try { blob = await getRecording(session.id); }
+        catch { /* In-memory playback can still be sent when local storage failed. */ }
+        recording = blob ?? await fetch(recordingUrl).then((response) => response.blob());
+      }
       await uploadSession(session, recording);
       if (mountedRef.current) {
-        setNotice('The local Python API received and saved this recording. Your browser copy is still available.');
+        setNotice(session.captureKind === 'episoden-tab'
+          ? 'Your microphone track was sent for analysis. The full call stays available for replay and download.'
+          : 'The local Python API received and saved this recording. Your browser copy is still available.');
         try {
           const updated = await updateSession(session.id, { notes, uploadedAt: Date.now() });
           setSelected(updated);
@@ -372,24 +440,24 @@ export function App() {
     } catch { setError('The session could not be deleted from local storage.'); }
   }
 
-  const busy = activeStatuses.includes(status) || cameraStatus === 'requesting' || uploading;
-  const canStart = !busy && (mode === 'audio' || cameraStatus === 'ready');
+  const busy = activeStatuses.includes(status) || uploading;
+  const canStart = !busy;
   const activeId = activeIdRef.current;
 
   return (
     <main className="min-h-screen bg-[#10171d] px-5 py-12 text-slate-100">
       <div className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your practice</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Sessions and recordings are saved in this browser. Send a finished recording to the local Python API to receive a transcript.</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your Episoden session</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Capture the Episoden call, download and replay it, then review your words and mistakes. Recordings stay in this browser until you choose to send one to the local analysis API.</p>
 
         <fieldset className="mt-8" disabled={busy}>
           <legend className="text-sm font-medium text-slate-200">Recording mode</legend>
           <div className="mt-3 grid grid-cols-2 gap-3">
             {(['audio', 'video'] as const).map((choice) => (
               <label key={choice} className={`cursor-pointer rounded-xl border p-4 text-sm ${mode === choice ? 'border-emerald-300 bg-emerald-300/10 text-white' : 'border-white/15 bg-white/5 text-slate-300'}`}>
-                <input className="mr-2 accent-emerald-300" type="radio" name="mode" value={choice} checked={mode === choice} onChange={() => { releaseCamera(); setMode(choice); setError(''); }} />
-                {choice === 'audio' ? 'Audio only' : 'Camera + microphone'}
+                <input className="mr-2 accent-emerald-300" type="radio" name="mode" value={choice} checked={mode === choice} onChange={() => { setMode(choice); setError(''); }} />
+                {choice === 'audio' ? 'My voice only' : 'Episoden tab + both voices'}
               </label>
             ))}
           </div>
@@ -397,14 +465,13 @@ export function App() {
 
         {mode === 'video' && (
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
-            <h2 className="text-lg font-semibold">Camera preview</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-300">Check your framing before recording. The microphone connects when you start.</p>
-            {cameraStatus === 'ready' ? <>
-              <video ref={previewRef} className="mt-5 aspect-video w-full rounded-xl bg-slate-900 object-cover" autoPlay muted playsInline aria-label="Live camera preview" />
-              <p className="mt-4 text-sm text-emerald-300">Camera connected</p>
-              {!busy && <button className="mt-3 text-sm underline" onClick={releaseCamera} type="button">Turn off camera</button>}
-            </> : cameraStatus === 'requesting' ? <p className="mt-5 text-sm">Waiting for camera permission…</p> :
-              <button className="mt-5 rounded-xl border border-emerald-300 px-4 py-3 text-sm font-semibold text-emerald-300" onClick={enableCamera} type="button">Enable Camera Preview</button>}
+            <h2 className="text-lg font-semibold">Before you record</h2>
+            <ol className="mt-3 list-inside list-decimal space-y-2 text-sm leading-6 text-slate-300">
+              <li>Open <a className="text-emerald-300 underline" href="https://www.episoden.com/en/" target="_blank" rel="noreferrer">Episoden</a> in another Chrome tab and ask your partner for permission to record.</li>
+              <li>Click Start Recording, choose <strong className="text-white">Chrome Tab</strong>, select the Episoden tab, and enable <strong className="text-white">Share tab audio</strong>.</li>
+              <li>Allow microphone access so the recording includes your voice.</li>
+              <li>Use headphones if possible to keep your partner's voice from echoing into your microphone.</li>
+            </ol>
           </section>
         )}
 
@@ -414,7 +481,7 @@ export function App() {
           <p className="mt-5 text-sm text-slate-300">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></p>
           {activeId && <p className="mt-2 break-all font-mono text-xs text-slate-400">Session {activeId}</p>}
           {!busy && <div className="mt-6"><PrimaryButton onClick={startRecording} disabled={!canStart}>Start Recording</PrimaryButton></div>}
-          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">Choose Allow in the microphone prompt.</p>}
+          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{mode === 'video' ? 'Choose the Episoden Chrome tab, share tab audio, then allow the microphone.' : 'Choose Allow in the microphone prompt.'}</p>}
           {status === 'recording' && <button className="mt-6 w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={stopRecording} type="button">Stop Recording</button>}
           {status === 'processing' && <p className="mt-6 text-sm text-slate-300">Saving the session…</p>}
           {error && <p className="mt-5 text-sm text-red-300" role="alert">{error}</p>}
@@ -424,25 +491,26 @@ export function App() {
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
             <h2 className="text-lg font-semibold">Session details</h2>
             <p className="mt-3 break-all font-mono text-xs text-slate-400">{selected.id}</p>
-            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.mode} · {selected.status} · {duration(selected.durationMs)}</p>
+            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'episoden-tab' ? 'Episoden call' : selected.mode === 'audio' ? 'My voice' : 'Video'} · {selected.status} · {duration(selected.durationMs)}</p>
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
-            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">Sent to local API on {new Date(selected.uploadedAt).toLocaleString()}</p>}
+            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{selected.captureKind === 'episoden-tab' ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
             {recordingUrl && (selected.mode === 'video'
-              ? <video className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" />
-              : <audio className="mt-4 w-full" controls src={recordingUrl} preload="metadata" />)}
+              ? <video ref={(node) => { playbackRef.current = node; }} className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" />
+              : <audio ref={(node) => { playbackRef.current = node; }} className="mt-4 w-full" controls src={recordingUrl} preload="metadata" />)}
             <label className="mt-5 block text-sm font-medium" htmlFor="session-notes">Notes</label>
             <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" disabled={uploading} />
             <div className="mt-4 flex flex-wrap gap-3">
               <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button" disabled={uploading}>Save notes</button>
               {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950" onClick={download} type="button">Download recording</button>}
-              {recordingUrl && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading}>{uploading ? 'Sending to local API…' : 'Send to local API'}</button>}
+              {recordingUrl && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading || (selected.captureKind === 'episoden-tab' && !selected.analysisSizeBytes)}>{uploading ? 'Sending for analysis…' : 'Analyze my voice'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
-            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">Sending copies this recording and your notes to the Python server on this computer at 127.0.0.1:8000. Start the server first; your browser copy remains available.</p>}
+            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{selected.captureKind === 'episoden-tab' ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
+            {selected.captureKind === 'episoden-tab' && !selected.analysisSizeBytes && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is unavailable. You can still replay and download the full call.</p>}
           </section>
         )}
 
-        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} sessionId={selected.id} />}
+        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} sessionId={selected.id} onReplayAt={replayAt} />}
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent sessions</h2><button className="text-sm text-emerald-300 underline" onClick={() => void recover()} type="button">Recover interrupted</button></div>
@@ -450,7 +518,7 @@ export function App() {
             <ul className="mt-4 space-y-3">{sessions.map((session) => (
               <li key={session.id} className="rounded-xl border border-white/10 p-3">
                 <button className="w-full text-left" onClick={() => void selectSession(session)} type="button" disabled={busy || activeStatuses.includes(session.status)}>
-                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {session.mode}</span>
+                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {session.captureKind === 'episoden-tab' ? 'Episoden call' : session.mode === 'audio' ? 'My voice' : 'Video'}</span>
                   <span className="mt-1 block text-xs text-slate-400">{session.status} · {duration(session.durationMs)} · {session.id.slice(0, 8)}</span>
                 </button>
               </li>
