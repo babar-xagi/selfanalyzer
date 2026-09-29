@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getTranscript, startTranscript, type RemoteTranscript } from '../../lib/backend';
+import { GrammarPanel } from './GrammarPanel';
 
 function timestamp(milliseconds: number): string {
   const seconds = Math.floor(milliseconds / 1000);
@@ -47,7 +48,7 @@ export function TranscriptPanel({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId, retryCount]);
 
-  return (
+  return <>
     <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6" aria-label="Transcript">
       <h2 className="text-lg font-semibold">Transcript</h2>
       {!transcript && !error && <p className="mt-3 text-sm text-slate-300">Checking transcription…</p>}
@@ -71,5 +72,6 @@ export function TranscriptPanel({ sessionId }: { sessionId: string }) {
         }}>Retry transcription</button>
       </>}
     </section>
-  );
+    {transcript?.status === 'completed' && <GrammarPanel sessionId={sessionId} />}
+  </>;
 }

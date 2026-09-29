@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const url = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`;
-const { uploadSession, getTranscript } = await import(url);
+const { uploadSession, getTranscript, getGrammar } = await import(url);
 
 const now = Date.now();
 const session = {
@@ -40,4 +40,7 @@ assert.match(remote.sha256, /^[0-9a-f]{64}$/);
 const transcript = await getTranscript(session.id, { fetchImpl: browserStyleFetch });
 assert.equal(transcript.session_id, session.id);
 assert.equal(transcript.status, 'not_started');
+const grammar = await getGrammar(session.id, { fetchImpl: browserStyleFetch });
+assert.equal(grammar.session_id, session.id);
+assert.equal(grammar.status, 'not_started');
 console.log(`TypeScript client uploaded session ${session.id} (${remote.size_bytes} bytes).`);

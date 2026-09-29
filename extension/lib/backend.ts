@@ -26,6 +26,23 @@ export interface RemoteTranscript {
   updated_at: string | null;
 }
 
+export interface GrammarCorrection {
+  timestamp_ms: number;
+  original: string;
+  corrected: string;
+  natural_alternative: string;
+  explanation: string;
+  category: string;
+}
+
+export interface RemoteGrammar {
+  session_id: string;
+  status: 'not_started' | 'queued' | 'running' | 'completed' | 'failed';
+  corrections: GrammarCorrection[];
+  error: string | null;
+  updated_at: string | null;
+}
+
 interface UploadOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -71,6 +88,22 @@ export async function getTranscript(sessionId: string, options: UploadOptions = 
 
 export async function startTranscript(sessionId: string, options: UploadOptions = {}): Promise<RemoteTranscript> {
   return request<RemoteTranscript>(`/sessions/${encodeURIComponent(sessionId)}/transcript`, { method: 'POST' }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
+}
+
+export async function getGrammar(sessionId: string, options: UploadOptions = {}): Promise<RemoteGrammar> {
+  return request<RemoteGrammar>(`/sessions/${encodeURIComponent(sessionId)}/grammar`, { method: 'GET' }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
+}
+
+export async function startGrammar(sessionId: string, options: UploadOptions = {}): Promise<RemoteGrammar> {
+  return request<RemoteGrammar>(`/sessions/${encodeURIComponent(sessionId)}/grammar`, { method: 'POST' }, {
     baseUrl: options.baseUrl ?? LOCAL_API_URL,
     fetchImpl: options.fetchImpl ?? fetch,
     signal: options.signal,

@@ -16,10 +16,12 @@ from threading import Lock
 from typing import Annotated, Callable, Literal
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.grammar import GrammarCorrection, GrammarOutput, review_grammar
 from app.transcription import transcribe_recording
 
 
@@ -81,6 +83,14 @@ class TranscriptRead(BaseModel):
     updated_at: datetime | None = None
 
 
+class GrammarRead(BaseModel):
+    session_id: UUID
+    status: Literal["not_started", "queued", "running", "completed", "failed"]
+    corrections: list[GrammarCorrection] = Field(default_factory=list)
+    error: str | None = None
+    updated_at: datetime | None = None
+
+
 def _require_client(x_conversation_coach_client: Annotated[str | None, Header()] = None) -> None:
     # This custom header prevents ordinary cross-origin browser forms from writing
     # to the loopback API. It is not authentication against local processes.
@@ -115,6 +125,7 @@ def create_app(
     data_dir: Path | None = None,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
     transcriber: Callable[[Path], dict] | None = None,
+    grammar_reviewer: Callable[[list[dict]], dict] | None = None,
 ) -> FastAPI:
     storage = Path(data_dir or os.getenv("CONVERSATION_COACH_DATA_DIR", DEFAULT_DATA_DIR)).resolve()
     recordings = storage / "recordings"
@@ -156,9 +167,27 @@ def create_app(
                 updated_at = ? WHERE status IN ('queued', 'running')""",
             (datetime.now(timezone.utc).isoformat(),),
         )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS grammar_reviews (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+                transcript_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL,
+                corrections_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            """UPDATE grammar_reviews SET status = 'failed',
+                error = 'The server restarted during grammar analysis. Retry analysis.',
+                updated_at = ? WHERE status IN ('queued', 'running')""",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
 
     recognize = transcriber or (lambda path: transcribe_recording(path, models))
+    review = grammar_reviewer or review_grammar
     recognition_lock = Lock()
+    grammar_lock = Lock()
 
     def read_transcript_data(session_id: UUID) -> dict:
         with _connect(db_path) as connection:
@@ -202,6 +231,59 @@ def create_app(
                             error = 'Transcription failed. Check backend logs and retry.',
                             updated_at = ? WHERE session_id = ? AND recording_sha256 = ?""",
                         (datetime.now(timezone.utc).isoformat(), str(session_id), digest),
+                    )
+
+    def read_grammar_data(session_id: UUID) -> dict:
+        with _connect(db_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM grammar_reviews WHERE session_id = ?", (str(session_id),)
+            ).fetchone()
+        if row is None:
+            return {"session_id": session_id, "status": "not_started"}
+        result = dict(row)
+        transcript = read_transcript_data(session_id)
+        if transcript["status"] != "completed" or result["transcript_sha256"] != transcript_digest(transcript["segments"]):
+            return {"session_id": session_id, "status": "not_started"}
+        result["corrections"] = json.loads(result.pop("corrections_json"))
+        result.pop("transcript_sha256")
+        return result
+
+    def transcript_digest(segments: list[dict]) -> str:
+        return hashlib.sha256(
+            json.dumps(segments, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+    def run_grammar(session_id: UUID, digest: str, segments: list[dict]) -> None:
+        with grammar_lock:
+            with _connect(db_path) as connection:
+                connection.execute(
+                    "UPDATE grammar_reviews SET status = 'running', updated_at = ? WHERE session_id = ? AND transcript_sha256 = ?",
+                    (datetime.now(timezone.utc).isoformat(), str(session_id), digest),
+                )
+            try:
+                output = GrammarOutput.model_validate(review(segments))
+                with _connect(db_path) as connection:
+                    connection.execute(
+                        """UPDATE grammar_reviews SET status = 'completed', corrections_json = ?,
+                            error = NULL, updated_at = ?
+                            WHERE session_id = ? AND transcript_sha256 = ?""",
+                        (
+                            json.dumps([item.model_dump() for item in output.corrections]),
+                            datetime.now(timezone.utc).isoformat(), str(session_id), digest,
+                        ),
+                    )
+            except Exception as error:
+                logger.exception("Grammar analysis failed for session %s", session_id)
+                message = (
+                    "Local grammar model unavailable. Start it and retry."
+                    if isinstance(error, (httpx.ConnectError, httpx.TimeoutException))
+                    else "Grammar analysis failed. Check backend logs and retry."
+                )
+                with _connect(db_path) as connection:
+                    connection.execute(
+                        """UPDATE grammar_reviews SET status = 'failed', error = ?,
+                            updated_at = ? WHERE session_id = ? AND transcript_sha256 = ?""",
+                        (message, datetime.now(timezone.utc).isoformat(), str(session_id), digest),
                     )
 
     app = FastAPI(title="Conversation Coach Local API", version="0.1.0")
@@ -345,6 +427,43 @@ def create_app(
             elif row["status"] in {"queued", "running"}:
                 response.status_code = 202
         return read_transcript_data(session_id)
+
+    @router.get("/sessions/{session_id}/grammar", response_model=GrammarRead)
+    def read_grammar(session_id: UUID) -> dict:
+        _get_session(db_path, session_id)
+        return read_grammar_data(session_id)
+
+    @router.post("/sessions/{session_id}/grammar", response_model=GrammarRead)
+    def request_grammar(
+        session_id: UUID, background_tasks: BackgroundTasks, response: Response
+    ) -> dict:
+        _get_session(db_path, session_id)
+        transcript = read_transcript_data(session_id)
+        if transcript["status"] != "completed":
+            raise HTTPException(status_code=409, detail="Complete transcription before grammar analysis.")
+        segments = transcript["segments"]
+        digest = transcript_digest(segments)
+        with _connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, transcript_sha256 FROM grammar_reviews WHERE session_id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if row is None or row["transcript_sha256"] != digest or row["status"] == "failed":
+                connection.execute(
+                    """INSERT INTO grammar_reviews (session_id, transcript_sha256, status, updated_at)
+                        VALUES (?, ?, 'queued', ?)
+                        ON CONFLICT(session_id) DO UPDATE SET
+                            transcript_sha256 = excluded.transcript_sha256,
+                            status = 'queued', corrections_json = '[]',
+                            error = NULL, updated_at = excluded.updated_at""",
+                    (str(session_id), digest, datetime.now(timezone.utc).isoformat()),
+                )
+                background_tasks.add_task(run_grammar, session_id, digest, segments)
+                response.status_code = 202
+            elif row["status"] in {"queued", "running"}:
+                response.status_code = 202
+        return read_grammar_data(session_id)
 
     app.include_router(router)
     return app
