@@ -1,58 +1,72 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
+import type { CaptureState, ControlReply } from '../../lib/recordingControl';
+
+type PopupCommand = 'CAPTURE_STATUS' | 'CAPTURE_START' | 'CAPTURE_STOP' | 'CAPTURE_OPEN';
+
+const isBusy = (state: CaptureState | null) => state && ['choosing', 'preparing', 'recording', 'processing'].includes(state.phase);
 
 export function App() {
   const focus = getPracticeFocus();
-  const [launchError, setLaunchError] = useState('');
+  const [capture, setCapture] = useState<CaptureState | null>(null);
+  const [error, setError] = useState('');
 
-  async function openRecordingTab() {
+  async function control(type: PopupCommand) {
     try {
-      await browser.tabs.create({ url: browser.runtime.getURL('/record.html') });
+      const reply = await browser.runtime.sendMessage<{ type: PopupCommand }, ControlReply>({ type });
+      setCapture(reply.state);
+      setError(reply.ok ? '' : reply.error ?? 'The recording command failed.');
     } catch {
-      setLaunchError('Could not open the recording tab. Please try again.');
+      setError('Could not reach the recording service. Reload the extension and try again.');
     }
   }
+
+  useEffect(() => {
+    void control('CAPTURE_STATUS');
+    const timer = window.setInterval(() => { void control('CAPTURE_STATUS'); }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const phase = capture?.phase ?? 'idle';
+  const status = phase === 'recording' ? 'Recording in background'
+    : phase === 'choosing' ? 'Choose a tab, window, or screen'
+    : phase === 'preparing' ? 'Starting recorder and microphone…'
+    : phase === 'processing' ? 'Saving your recording…'
+    : phase === 'completed' ? 'Recorded successfully'
+    : phase === 'interrupted' ? 'Recording interrupted'
+    : phase === 'failed' ? 'Recording could not start'
+    : 'Ready to record';
 
   return (
     <main className="min-h-[420px] w-[340px] bg-[#10171d] p-5 text-slate-100">
       <header className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Practice with purpose.</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Record your meeting.</h1>
         </div>
         <div aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-300/15 text-xl text-emerald-300">✦</div>
       </header>
 
       <section aria-live="polite" className="mt-7 rounded-2xl border border-white/10 bg-white/5 p-5">
-        <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
-          <span className="h-2 w-2 rounded-full bg-emerald-300" />
-          Ready for practice
+        <div className={`flex items-center gap-2 text-xs font-medium ${phase === 'recording' ? 'text-red-300' : 'text-emerald-300'}`}>
+          <span className={`h-2 w-2 rounded-full ${phase === 'recording' ? 'bg-red-300' : 'bg-emerald-300'}`} />
+          {status}
         </div>
-        <h2 className="mt-3 text-lg font-semibold">Your next conversation starts here</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-300">
-          Record an Episoden call with both voices and the screen, then replay it and review your English.
-        </p>
-        <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">
-          Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong>
-        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Choose your Google Meet or Episoden tab, a window, or the entire screen. Your microphone is recorded separately for analysis.</p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">For both voices, turn on Share audio in Chrome’s picker. Ask other participants before recording.</p>
+        <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 
-      <div className="mt-5">
-        <PrimaryButton onClick={openRecordingTab}>
-          Start Session
-        </PrimaryButton>
-        {launchError && <p className="mt-3 text-sm text-red-300" role="alert">{launchError}</p>}
+      <div className="mt-5 space-y-3">
+        {!isBusy(capture) && <PrimaryButton onClick={() => void control('CAPTURE_START')}>Start recording</PrimaryButton>}
+        {phase === 'recording' && <button className="w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={() => void control('CAPTURE_STOP')} type="button">Stop recording</button>}
+        <button className="w-full rounded-xl border border-white/20 px-4 py-3 text-sm font-semibold text-white" onClick={() => void control('CAPTURE_OPEN')} type="button">{phase === 'completed' ? 'Replay, download, or analyze' : 'Open recordings'}</button>
+        {(error || capture?.error) && <p className="text-sm text-red-300" role="alert">{error || capture?.error}</p>}
       </div>
 
-      <button
-        className="mt-5 w-full rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-white/5 hover:text-white"
-        onClick={() => window.open('/options.html', '_blank')}
-        type="button"
-      >
-        Settings →
-      </button>
+      <button className="mt-5 w-full rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-white/5 hover:text-white" onClick={() => window.open('/options.html', '_blank')} type="button">Settings →</button>
     </main>
   );
 }

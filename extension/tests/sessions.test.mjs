@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   appendAnalysisChunk, appendChunk, createSession, deleteSession,
-  finishSession, getAnalysisRecording, getRecording, listSessions,
+  finishSession, getAnalysisRecording, getRecording, hasSeparateVoiceTrack,
+  listSessions, updateSession,
 } from '../lib/sessions.ts';
 
 test('upgrades existing sessions and keeps full call separate from analysis audio', async () => {
@@ -40,4 +41,17 @@ test('upgrades existing sessions and keeps full call separate from analysis audi
   assert.equal(await getRecording(session.id), null);
   assert.equal(await getAnalysisRecording(session.id), null);
   assert.deepEqual(await listSessions(), []);
+});
+
+test('screen sharing retains the audio availability and isolates analysis audio', async () => {
+  const session = await createSession('video', 'screen-share');
+  await updateSession(session.id, { sharedAudio: false });
+  await appendChunk(session.id, 0, new Blob(['screen and microphone'], { type: 'video/webm' }));
+  await appendAnalysisChunk(session.id, 0, new Blob(['my voice'], { type: 'audio/webm' }));
+  const finished = await finishSession(session.id, 'completed', 3000, 'video/webm', null, 'audio/webm');
+  assert.equal(hasSeparateVoiceTrack(finished), true);
+  assert.equal(finished.sharedAudio, false);
+  assert.equal(await (await getRecording(session.id)).text(), 'screen and microphone');
+  assert.equal(await (await getAnalysisRecording(session.id)).text(), 'my voice');
+  await deleteSession(session.id);
 });

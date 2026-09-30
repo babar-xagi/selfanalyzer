@@ -1,8 +1,8 @@
 # Conversation Coach
 
-Conversation Coach records your Episoden call so you can download it, play it again, and review your English after the conversation.
+Conversation Coach records a Google Meet or Episoden call so you can download it, play it again, and review your English after the conversation.
 
-**Current status:** The extension can capture the Episoden tab screen and audio together with your microphone, save and download the full call, and analyze a separate recording of your voice. See the [roadmap](docs/roadmap.md) for verification status.
+**Current status:** The extension can capture a selected tab, window, or full screen with shared audio and your microphone, save and download the recording, and analyze a separate recording of your voice. See the [roadmap](docs/roadmap.md) for verification status.
 
 ## Who it is for
 
@@ -10,7 +10,9 @@ English learners who already practice speaking with other people online and want
 
 ## Current extension
 
-The Chrome extension has a React popup with a Start Session button. Open Episoden in a Chrome tab and ask your partner before recording. Choose **Episoden tab + both voices**, click **Start Recording**, then select the Episoden tab in Chrome's sharing picker and enable **Share tab audio**. Allow microphone access. The extension records the shared call screen and both voices into a downloadable WebM video. **Stop Recording** saves it for playback, download, notes, and deletion. **My voice only** remains available as an audio mode.
+Open your meeting and ask participants before recording. In the extension popup, click **Start recording**, choose the meeting tab, a window, or the full screen in Chrome's picker, and turn on **Share audio**. Allow microphone access when Chrome asks. The recorder briefly opens its own tab, then returns you to the meeting while it keeps recording. Open the popup again and click **Stop recording**, or stop sharing from Chrome. A Chrome notification and the popup show when the recording is saved. Choose **Replay, download, or analyze** to open the saved WebM video. The recorder tab must stay open while capture runs. **My voice only** remains available from the recorder page.
+
+Chrome's source audio options vary by source and platform. A Chrome tab with **Share tab audio** is the best choice for both meeting voices. If source audio was not shared, the extension records the screen and your microphone and marks the session as microphone only.
 
 During full-call capture, the extension also saves an isolated microphone track. **Analyze my voice** sends only that track and your notes to the local Python API; the full call stays in browser storage for replay and download. The API transcribes your speech and offers grammar suggestions. Click a transcript or correction timestamp to play that moment in the saved recording. Timestamps are approximate.
 
@@ -44,9 +46,9 @@ npm run typecheck
 npm run build
 ```
 
-To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. Open the popup and click **Start Session**. For a full call, choose the Episoden tab and **Share tab audio** in Chrome's picker. Stop, play the video, add notes, download it, then reopen the recorder to confirm the session remains. Delete a browser session and verify it disappears from Recent sessions. Also test denied tab sharing, missing tab audio, and denied microphone access. Open **Settings** and choose a focus, then reopen the popup to confirm it is remembered.
+To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. Open the popup and click **Start recording**. Choose a tab, window, or screen and enable its audio option. After recording starts, the meeting tab returns to the front. Open the popup to stop, then use the notification or **Replay, download, or analyze** to play and download the saved video. Reopen the recorder to confirm the session remains. Delete a browser session and verify it disappears from Recent sessions. Also test denied sharing, missing source audio, and denied microphone access. Open **Settings** and choose a focus, then reopen the popup to confirm it is remembered.
 
-With both local servers running, select a saved session and click **Analyze my voice**. For new Episoden captures, the API receives only your microphone audio, while the full call stays in your browser. The transcript appears after transcription, followed by grammar corrections and explanations. The first transcription downloads the English speech model, so it can take a few minutes; later sessions reuse the downloaded model. The extension requests host access only to `http://127.0.0.1/*` for this connection.
+With both local servers running, select a saved session and click **Analyze my voice**. For screen captures, the API receives only your microphone audio, while the full call stays in your browser. The transcript appears after transcription, followed by grammar corrections and explanations. The first transcription downloads the English speech model, so it can take a few minutes; later sessions reuse the downloaded model. The extension requests host access only to `http://127.0.0.1/*` for this connection.
 
 ## Project documents
 

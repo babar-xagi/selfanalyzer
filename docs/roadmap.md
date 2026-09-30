@@ -2,7 +2,7 @@
 
 The [blueprint](../project.md) describes the intended sequence. Status here reflects repository work and verification, regardless of checkmarks in the blueprint.
 
-The user's immediate goal is to record an Episoden call with both voices and the call screen, download and replay the complete recording, and then analyze their own mistakes. This takes priority over further coaching categories.
+The user's immediate goal is to record a Google Meet or Episoden call with both voices and the call screen, download and replay the complete recording, and then analyze their own mistakes. This takes priority over further coaching categories.
 
 | Milestone | Deliverable | Status |
 | --- | --- | --- |
@@ -14,10 +14,10 @@ The user's immediate goal is to record an Episoden call with both voices and the
 | 005 | FastAPI session and upload API | Implemented; backend lifecycle tests, TypeScript client to live Python API, synthetic browser UI upload, extension type-check, and build passed. Manual unpacked Chrome upload check pending |
 | 006 | Local timestamped speech-to-text | Implemented; backend tests, real WebM speech-to-text API check, extension type-check and build passed. User microphone acceptance check pending |
 | 007 | Local grammar coach with corrections, explanations, and timestamps | Implemented; backend and client checks, real Qwen model response, and synthetic end-to-end API check passed. User microphone acceptance pending |
-| Episoden recording | User-selected Episoden tab video and audio, mixed with microphone for replay; separate microphone track for personal analysis | Implemented; type-check and build passed. Real Chrome call capture and downloaded-file acceptance pending |
+| Meeting screen recording | User-selected tab, window, or screen; source audio mixed with microphone for replay; separate microphone track for personal analysis; popup Stop and saved notification | Implemented; type-check, build, and local storage tests passed. Real Chrome capture, source-audio, and downloaded-file acceptance pending |
 | 008–010 | Natural English, speaking analytics, and full report | Planned; MVP 1.0 boundary |
 | 011–020 | Video signals, history, storage, progress, practice, and production features | Later |
 
 ## Manual device acceptance check
 
-Load the extension in Chrome and open Episoden in another tab. Start a recording, choose Chrome Tab, select Episoden, and enable Share tab audio. Speak with a partner who has agreed to recording. Stop, play the video to confirm both voices and the call screen, download it, and open the downloaded file. Click Analyze my voice and confirm the transcript contains only your speech. Click a transcript or correction timestamp and confirm playback jumps to that moment. Also test missing tab audio, denied tab sharing, denied microphone access, and interrupted recovery.
+Load the extension in Chrome and open Google Meet or Episoden. In the popup, click Start recording, choose the meeting tab, enable Share tab audio, and allow microphone access. Confirm the meeting tab returns to the front and the popup shows Recording in background. Speak with a participant who agreed to recording. Stop from the popup, confirm the Recorded successfully notification, play the video to confirm both voices and the call screen, download it, and open the downloaded file. Click Analyze my voice and confirm the transcript contains only your speech. Click a transcript or correction timestamp and confirm playback jumps to that moment. Repeat with a selected window or full screen and check whether Chrome offers source audio. Also test missing source audio, denied sharing, denied microphone access, and interrupted recovery.

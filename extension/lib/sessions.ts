@@ -15,9 +15,14 @@ export interface Session {
   notes: string;
   error: string | null;
   uploadedAt?: number | null;
-  captureKind?: 'microphone' | 'episoden-tab';
+  captureKind?: 'microphone' | 'episoden-tab' | 'screen-share';
+  sharedAudio?: boolean;
   analysisMimeType?: string | null;
   analysisSizeBytes?: number;
+}
+
+export function hasSeparateVoiceTrack(session: Session): boolean {
+  return session.captureKind === 'episoden-tab' || session.captureKind === 'screen-share';
 }
 
 interface Chunk { sessionId: string; index: number; blob: Blob }
