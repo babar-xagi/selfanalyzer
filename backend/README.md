@@ -1,6 +1,6 @@
 # Local Python API
 
-For new Episoden call recordings, the extension sends only the separate microphone audio to Python; the complete call video remains in the browser for replay and download. The API transcribes the user's English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
+For screen and webcam recordings, the extension sends only the separate microphone audio to Python; the complete video remains in the browser for replay and download. The API transcribes the user's English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
 
 ## Run on Windows
 
@@ -41,6 +41,7 @@ The model server listens only at `127.0.0.1:8081`. Leave it running alongside Fa
 | GET | `/sessions/{id}` | Read saved metadata and upload confirmation |
 | POST | `/sessions/{id}/transcript` | Queue local transcription after the session is finished |
 | GET | `/sessions/{id}/transcript` | Read status, text, and timestamped segments |
+| PATCH | `/sessions/{id}/transcript` | Save user-corrected words while preserving segment times; invalidates old grammar review |
 | POST | `/sessions/{id}/grammar` | Queue grammar review after transcription |
 | GET | `/sessions/{id}/grammar` | Read status and structured corrections |
 

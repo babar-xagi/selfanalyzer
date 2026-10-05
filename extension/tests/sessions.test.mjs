@@ -55,3 +55,20 @@ test('screen sharing retains the audio availability and isolates analysis audio'
   assert.equal(await (await getAnalysisRecording(session.id)).text(), 'my voice');
   await deleteSession(session.id);
 });
+
+test('webcam video keeps its microphone track and corrected transcript metadata', async () => {
+  const session = await createSession('video', 'webcam');
+  await appendChunk(session.id, 0, new Blob(['camera and voice'], { type: 'video/webm' }));
+  await appendAnalysisChunk(session.id, 0, new Blob(['voice'], { type: 'audio/webm' }));
+  await finishSession(session.id, 'completed', 2000, 'video/webm', null, 'audio/webm');
+  const corrected = await updateSession(session.id, {
+    transcriptEdits: [{ start_ms: 0, end_ms: 2000, text: 'I went yesterday.' }],
+    transcriptUpdatedAt: '2026-10-05T12:00:00Z',
+  });
+  assert.equal(corrected.captureKind, 'webcam');
+  assert.equal(hasSeparateVoiceTrack(corrected), true);
+  assert.equal(corrected.transcriptEdits[0].text, 'I went yesterday.');
+  assert.equal(await (await getRecording(session.id)).text(), 'camera and voice');
+  assert.equal(await (await getAnalysisRecording(session.id)).text(), 'voice');
+  await deleteSession(session.id);
+});

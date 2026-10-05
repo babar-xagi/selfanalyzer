@@ -156,8 +156,20 @@ def test_transcript_is_timestamped_persisted_and_idempotent(tmp_path):
     assert client.post(url, headers=HEADERS).json()["status"] == "completed"
     assert calls == [media]
 
+    edited = client.patch(url, headers=HEADERS, json={
+        "source_updated_at": completed.json()["updated_at"],
+        "texts": ["Hello.", "I am really practicing English."],
+    })
+    assert edited.status_code == 200
+    assert edited.json()["text"] == "Hello. I am really practicing English."
+    assert edited.json()["segments"][1]["start_ms"] == 900
+    assert client.patch(url, headers=HEADERS, json={
+        "source_updated_at": completed.json()["updated_at"],
+        "texts": ["Stale.", "Stale."],
+    }).status_code == 409
+
     restarted = TestClient(create_app(data_dir=tmp_path, transcriber=recognize))
-    assert restarted.get(url, headers=HEADERS).json() == completed.json()
+    assert restarted.get(url, headers=HEADERS).json() == edited.json()
 
 
 def test_failed_transcript_can_be_retried(tmp_path):

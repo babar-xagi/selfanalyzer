@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
-import { uploadSession } from '../../lib/backend';
+import { getTranscript, startTranscript, uploadSession, type RemoteTranscript, type TranscriptSegment } from '../../lib/backend';
 import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage } from '../../lib/recordingControl';
+import { activeLineIndex, downloadBlob, recordingBundle, transcriptText, transcriptVtt } from '../../lib/transcript';
 import { TranscriptPanel } from './TranscriptPanel';
 import {
   appendAnalysisChunk, appendChunk, createSession, deleteSession, finishSession,
@@ -13,7 +14,8 @@ import {
 } from '../../lib/sessions';
 
 type ViewStatus = 'idle' | SessionStatus;
-type DeviceName = 'microphone';
+type DeviceName = 'microphone' | 'camera';
+type RecordingChoice = 'screen' | 'webcam' | 'audio';
 
 function duration(milliseconds: number): string {
   const seconds = Math.floor(milliseconds / 1000);
@@ -27,7 +29,7 @@ function duration(milliseconds: number): string {
 function deviceError(error: unknown, device: DeviceName): string {
   if (error instanceof DOMException) {
     if (['NotAllowedError', 'PermissionDeniedError'].includes(error.name))
-      return 'Microphone access was denied. Allow it in browser settings and try again.';
+      return `${device === 'camera' ? 'Camera or microphone' : 'Microphone'} access was denied. Allow it in browser settings and try again.`;
     if (['NotFoundError', 'DevicesNotFoundError'].includes(error.name))
       return `No ${device} was found. Connect one and try again.`;
     if (['NotReadableError', 'TrackStartError'].includes(error.name))
@@ -63,7 +65,7 @@ function reportControl(message: ControlMessage): void {
 }
 
 export function App() {
-  const [mode, setMode] = useState<CaptureMode>('video');
+  const [choice, setChoice] = useState<RecordingChoice>(() => new URLSearchParams(window.location.search).get('webcam') === '1' ? 'webcam' : 'screen');
   const [status, setStatus] = useState<ViewStatus>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -73,9 +75,14 @@ export function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [bundlePreparing, setBundlePreparing] = useState(false);
+  const [playbackMs, setPlaybackMs] = useState(0);
+  const [reviewSegments, setReviewSegments] = useState<TranscriptSegment[]>([]);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const analysisRecorderRef = useRef<MediaRecorder | null>(null);
   const displayRef = useRef<MediaStream | null>(null);
+  const webcamRef = useRef<MediaStream | null>(null);
+  const previewRef = useRef<HTMLVideoElement | null>(null);
   const mixedRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
@@ -93,6 +100,9 @@ export function App() {
     microphoneRef.current = null;
     stopStream(displayRef.current);
     displayRef.current = null;
+    stopStream(webcamRef.current);
+    webcamRef.current = null;
+    if (previewRef.current) previewRef.current.srcObject = null;
     stopStream(mixedRef.current);
     mixedRef.current = null;
     const context = audioContextRef.current;
@@ -174,6 +184,11 @@ export function App() {
   }, [status]);
 
   useEffect(() => {
+    if (choice === 'webcam' && status === 'recording' && previewRef.current && webcamRef.current)
+      previewRef.current.srcObject = webcamRef.current;
+  }, [choice, status]);
+
+  useEffect(() => {
     if (!activeStatuses.includes(status)) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
@@ -181,6 +196,8 @@ export function App() {
   }, [status]);
 
   async function startRecording(launch?: CaptureLaunch) {
+    const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' ? 'screen' : choice;
+    const recordingMode: CaptureMode = captureChoice === 'audio' ? 'audio' : 'video';
     setError(''); setNotice(''); setElapsedMs(0);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       const message = 'This browser does not support recording. Try a recent version of Chrome.';
@@ -188,17 +205,17 @@ export function App() {
       if (launch) reportControl({ type: 'RECORDER_FAILED', error: message } satisfies ControlMessage);
       return;
     }
-    if (mode === 'video' && !launch && !navigator.mediaDevices.getDisplayMedia) {
+    if (captureChoice === 'screen' && !launch && !navigator.mediaDevices.getDisplayMedia) {
       setError('This browser cannot capture a screen. Use a recent version of Chrome.'); return;
     }
 
     setStatus('preparing');
-    if (mode === 'video') {
+    if (captureChoice === 'screen') {
       try {
         audioContextRef.current = new AudioContext();
         // The popup picker gives this page a one-use desktop stream ID. The
         // manual button path uses getDisplayMedia while it has user activation.
-        const display = launch
+        const display = launch?.kind === 'screen'
           ? await navigator.mediaDevices.getUserMedia({
               video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints,
               audio: launch.includeAudio ? { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false,
@@ -224,7 +241,7 @@ export function App() {
     }
 
     let session: Session;
-    try { session = await createSession(mode, mode === 'video' ? 'screen-share' : 'microphone'); }
+    try { session = await createSession(recordingMode, captureChoice === 'screen' ? 'screen-share' : captureChoice === 'webcam' ? 'webcam' : 'microphone'); }
     catch {
       releaseStreams(); setStatus('idle');
       setError('Local storage is unavailable. Free space or enable browser storage, then try again.');
@@ -236,11 +253,19 @@ export function App() {
     await refreshSessions();
 
     try {
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true }, video: false });
-      if (!mountedRef.current) { stopStream(microphone); return; }
+      const media = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true },
+        video: captureChoice === 'webcam' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      });
+      if (!mountedRef.current) { stopStream(media); return; }
+      const microphone = captureChoice === 'webcam' ? new MediaStream(media.getAudioTracks()) : media;
       microphoneRef.current = microphone;
-      let recordingStream: MediaStream = microphone;
-      if (mode === 'video') {
+      if (captureChoice === 'webcam') {
+        webcamRef.current = media;
+        if (previewRef.current) previewRef.current.srcObject = media;
+      }
+      let recordingStream: MediaStream = captureChoice === 'webcam' ? media : microphone;
+      if (captureChoice === 'screen') {
         const display = displayRef.current;
         const videoTrack = display?.getVideoTracks()[0];
         const sharedAudioTrack = display?.getAudioTracks()[0];
@@ -258,11 +283,11 @@ export function App() {
         } else recordingStream = new MediaStream([videoTrack, ...microphone.getAudioTracks()]);
         mixedRef.current = recordingStream;
       }
-      const recorder = new MediaRecorder(recordingStream, recorderOptions(mode));
+      const recorder = new MediaRecorder(recordingStream, recorderOptions(recordingMode));
       recorderRef.current = recorder;
-      const analysisRecorder = mode === 'video' ? new MediaRecorder(microphone, recorderOptions('audio')) : null;
+      const analysisRecorder = recordingMode === 'video' ? new MediaRecorder(microphone, recorderOptions('audio')) : null;
       analysisRecorderRef.current = analysisRecorder;
-      const mimeType = recorder.mimeType || (mode === 'video' ? 'video/webm' : 'audio/webm');
+      const mimeType = recorder.mimeType || (recordingMode === 'video' ? 'video/webm' : 'audio/webm');
       const analysisMimeType = analysisRecorder?.mimeType || null;
       const captured: Blob[] = [];
       let nextChunk = 0;
@@ -283,6 +308,9 @@ export function App() {
       }
       for (const track of displayRef.current?.getTracks() ?? []) {
         track.addEventListener('ended', () => interrupt('The screen share stopped.'), { once: true });
+      }
+      for (const track of webcamRef.current?.getVideoTracks() ?? []) {
+        track.addEventListener('ended', () => interrupt('The camera disconnected.'), { once: true });
       }
       if (analysisRecorder) {
         analysisRecorder.ondataavailable = (event) => {
@@ -359,12 +387,12 @@ export function App() {
         })();
       };
 
-      await updateSession(session.id, { status: 'recording', startedAt: Date.now(), mimeType, sharedAudio: Boolean(displayRef.current?.getAudioTracks().length) });
+      await updateSession(session.id, { status: 'recording', startedAt: Date.now(), mimeType, sharedAudio: captureChoice === 'screen' ? Boolean(displayRef.current?.getAudioTracks().length) : undefined });
       analysisRecorder?.start(1000);
       recorder.start(1000);
       startedRef.current = performance.now();
       setStatus('recording');
-      if (mode === 'video' && !displayRef.current?.getAudioTracks().length) setNotice('The selected source did not share meeting audio. This recording will include your microphone only.');
+      if (captureChoice === 'screen' && !displayRef.current?.getAudioTracks().length) setNotice('The selected source did not share meeting audio. This recording will include your microphone only.');
       if (launch) reportControl({ type: 'RECORDER_STARTED', sessionId: session.id } satisfies ControlMessage);
       await refreshSessions();
     } catch (cause) {
@@ -374,7 +402,7 @@ export function App() {
       releaseStreams();
       recorderRef.current = null;
       activeIdRef.current = null;
-      const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, 'microphone');
+      const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, captureChoice === 'webcam' ? 'camera' : 'microphone');
       try { await updateSession(session.id, { status: 'failed', endedAt: Date.now(), error: message }); }
       catch { /* The visible error still explains the failed start. */ }
       if (mountedRef.current) { setStatus('failed'); setError(message); await refreshSessions(); }
@@ -389,6 +417,8 @@ export function App() {
 
   async function selectSession(session: Session) {
     clearPlayback();
+    setPlaybackMs(0);
+    setReviewSegments([]);
     const token = selectionTokenRef.current;
     setError('');
     setSelected(session);
@@ -415,57 +445,99 @@ export function App() {
     } catch { setError('Notes could not be saved. Check browser storage.'); }
   }
 
-  function download() {
+  function downloadVideoOnly() {
     if (!recordingUrl || !selected) return;
     const link = document.createElement('a');
     link.href = recordingUrl;
     link.download = `conversation-coach-${selected.id}.${extension(selected.mimeType ?? '', selected.mode)}`;
     document.body.appendChild(link);
     link.click(); link.remove();
-    setNotice('Download requested. Check browser downloads for the file.');
+    setNotice('Video download requested. Check browser downloads for the file.');
   }
 
   function replayAt(milliseconds: number) {
     const player = playbackRef.current;
     if (!player) return;
     player.currentTime = Math.max(0, milliseconds / 1000);
+    setPlaybackMs(Math.max(0, milliseconds));
     player.scrollIntoView({ behavior: 'smooth', block: 'center' });
     void player.play().catch(() => setNotice('Select Play in the recording to hear this moment.'));
   }
 
+  async function ensureUploaded(session: Session): Promise<Session> {
+    if (session.uploadedAt) return session;
+    let recording: Blob;
+    if (hasSeparateVoiceTrack(session)) {
+      const ownVoice = await getAnalysisRecording(session.id);
+      if (!ownVoice) throw new Error('Your separate microphone track was not saved. You can still download the video alone.');
+      recording = ownVoice;
+    } else {
+      let blob: Blob | null = null;
+      try { blob = await getRecording(session.id); }
+      catch { /* In-memory playback can still be sent when local storage failed. */ }
+      recording = blob ?? await fetch(recordingUrl!).then((response) => response.blob());
+    }
+    await uploadSession(session, recording);
+    const updated = await updateSession(session.id, { notes: session.notes, uploadedAt: Date.now() });
+    if (mountedRef.current) { setSelected(updated); await refreshSessions(); }
+    return updated;
+  }
+
   async function sendToLocalApi() {
     if (!selected || !recordingUrl || uploading) return;
-    const session = { ...selected, notes };
     setError(''); setNotice(''); setUploading(true);
     try {
-      let recording: Blob;
-      if (hasSeparateVoiceTrack(session)) {
-        const ownVoice = await getAnalysisRecording(session.id);
-        if (!ownVoice) throw new Error('Your voice track was not saved. You can still replay and download the full call.');
-        recording = ownVoice;
-      } else {
-        let blob: Blob | null = null;
-        try { blob = await getRecording(session.id); }
-        catch { /* In-memory playback can still be sent when local storage failed. */ }
-        recording = blob ?? await fetch(recordingUrl).then((response) => response.blob());
-      }
-      await uploadSession(session, recording);
-      if (mountedRef.current) {
-        setNotice(hasSeparateVoiceTrack(session)
-          ? 'Your microphone track was sent for analysis. The full call stays available for replay and download.'
-          : 'The local Python API received and saved this recording. Your browser copy is still available.');
-        try {
-          const updated = await updateSession(session.id, { notes, uploadedAt: Date.now() });
-          setSelected(updated);
-          await refreshSessions();
-        } catch {
-          setNotice('The Python API saved the recording, but this browser could not mark it as sent.');
-        }
-      }
+      const session = await ensureUploaded({ ...selected, notes });
+      if (mountedRef.current) setNotice(hasSeparateVoiceTrack(session)
+        ? 'Your microphone track was sent for analysis. The full video stays in this browser.'
+        : 'The local Python API received this recording. Transcription is starting.');
     } catch (cause) {
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The local upload failed.');
+    } finally { if (mountedRef.current) setUploading(false); }
+  }
+
+  async function completedTranscript(sessionId: string): Promise<RemoteTranscript> {
+    let transcript = await getTranscript(sessionId);
+    if (transcript.status === 'not_started' || transcript.status === 'failed') transcript = await startTranscript(sessionId);
+    const deadline = Date.now() + 20 * 60_000;
+    while (transcript.status === 'queued' || transcript.status === 'running') {
+      if (Date.now() >= deadline) throw new Error('Transcription is still running. Keep the recorder open and try the download again later.');
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      transcript = await getTranscript(sessionId);
+    }
+    if (transcript.status !== 'completed') throw new Error(transcript.error || 'Transcription failed. You can download the video alone.');
+    return transcript;
+  }
+
+  async function downloadWithTranscript() {
+    if (!selected || !recordingUrl || uploading) return;
+    const original = { ...selected, notes };
+    setError(''); setNotice('Preparing your video and transcript. Keep this tab open.');
+    setUploading(true); setBundlePreparing(true);
+    try {
+      const uploaded = await ensureUploaded(original);
+      const transcript = await completedTranscript(uploaded.id);
+      const latest = (await listSessions()).find((session) => session.id === uploaded.id) ?? uploaded;
+      if (!latest.transcriptConfirmedAt || latest.transcriptUpdatedAt !== transcript.updated_at)
+        throw new Error('Transcript is ready. Listen, correct any misheard words, click “I checked these words,” then download the video and transcript together.');
+      const lines = latest.transcriptEdits?.length === transcript.segments.length ? latest.transcriptEdits : transcript.segments;
+      let video: Blob | null = null;
+      try { video = await getRecording(uploaded.id); }
+      catch { /* Use the in-memory recording when browser storage is unavailable. */ }
+      video ??= await fetch(recordingUrl).then((response) => response.blob());
+      if (!video || !video.size) throw new Error('The video is empty.');
+      const mediaName = `recording.${extension(uploaded.mimeType ?? video.type, uploaded.mode)}`;
+      const bundle = await recordingBundle([
+        { name: mediaName, data: video },
+        { name: 'transcript.txt', data: new Blob([transcriptText(lines)], { type: 'text/plain;charset=utf-8' }) },
+        { name: 'subtitles.vtt', data: new Blob([transcriptVtt(lines)], { type: 'text/vtt;charset=utf-8' }) },
+      ]);
+      downloadBlob(bundle, `conversation-coach-${uploaded.id}.zip`);
+      if (mountedRef.current) setNotice('Video, transcript, and timed subtitles downloaded together. Check your Downloads folder.');
+    } catch (cause) {
+      if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The video and transcript could not be downloaded.');
     } finally {
-      if (mountedRef.current) setUploading(false);
+      if (mountedRef.current) { setUploading(false); setBundlePreparing(false); }
     }
   }
 
@@ -482,27 +554,28 @@ export function App() {
   const busy = activeStatuses.includes(status) || uploading;
   const canStart = !busy;
   const activeId = activeIdRef.current;
+  const activeCaption = reviewSegments[activeLineIndex(reviewSegments, playbackMs)];
 
   return (
     <main className="min-h-screen bg-[#10171d] px-5 py-12 text-slate-100">
       <div className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your meeting</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Capture a Google Meet or Episoden call, download and replay it, then review your words and mistakes. Recordings stay in this browser until you choose to send your voice to the local analysis API.</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your conversation or yourself</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Capture a Google Meet or Episoden call, or record your own camera and voice. Replay, download, and review what you said.</p>
 
         <fieldset className="mt-8" disabled={busy}>
           <legend className="text-sm font-medium text-slate-200">Recording mode</legend>
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            {(['audio', 'video'] as const).map((choice) => (
-              <label key={choice} className={`cursor-pointer rounded-xl border p-4 text-sm ${mode === choice ? 'border-emerald-300 bg-emerald-300/10 text-white' : 'border-white/15 bg-white/5 text-slate-300'}`}>
-                <input className="mr-2 accent-emerald-300" type="radio" name="mode" value={choice} checked={mode === choice} onChange={() => { setMode(choice); setError(''); }} />
-                {choice === 'audio' ? 'My voice only' : 'Screen and meeting audio'}
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            {(['screen', 'webcam', 'audio'] as const).map((option) => (
+              <label key={option} className={`cursor-pointer rounded-xl border p-4 text-sm ${choice === option ? 'border-emerald-300 bg-emerald-300/10 text-white' : 'border-white/15 bg-white/5 text-slate-300'}`}>
+                <input className="mr-2 accent-emerald-300" type="radio" name="mode" value={option} checked={choice === option} onChange={() => { setChoice(option); setError(''); }} />
+                {option === 'screen' ? 'Meeting screen' : option === 'webcam' ? 'My camera + voice' : 'My voice only'}
               </label>
             ))}
           </div>
         </fieldset>
 
-        {mode === 'video' && (
+        {choice === 'screen' && (
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
             <h2 className="text-lg font-semibold">Before you record</h2>
             <ol className="mt-3 list-inside list-decimal space-y-2 text-sm leading-6 text-slate-300">
@@ -514,13 +587,16 @@ export function App() {
           </section>
         )}
 
+        {choice === 'webcam' && <p className="mt-5 text-sm text-slate-300">Allow camera and microphone access. Only your own camera and voice are recorded.</p>}
+
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <p aria-live="polite" className="text-sm font-medium capitalize text-emerald-300">{status === 'idle' ? 'Ready to record' : status}</p>
           <p className="mt-5 font-mono text-5xl font-semibold tabular-nums" role="timer">{duration(elapsedMs)}</p>
           <p className="mt-5 text-sm text-slate-300">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></p>
           {activeId && <p className="mt-2 break-all font-mono text-xs text-slate-400">Session {activeId}</p>}
           {!busy && <div className="mt-6"><PrimaryButton onClick={() => void startRecording()} disabled={!canStart}>Start Recording</PrimaryButton></div>}
-          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{mode === 'video' ? 'Choose a tab, window, or screen; turn on Share audio; then allow the microphone.' : 'Choose Allow in the microphone prompt.'}</p>}
+          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{choice === 'screen' ? 'Choose a tab, window, or screen; turn on Share audio; then allow the microphone.' : choice === 'webcam' ? 'Allow the camera and microphone in Chrome.' : 'Choose Allow in the microphone prompt.'}</p>}
+          {choice === 'webcam' && status === 'recording' && <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label="Camera preview" />}
           {status === 'recording' && <button className="mt-6 w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={stopRecording} type="button">Stop Recording</button>}
           {status === 'processing' && <p className="mt-6 text-sm text-slate-300">Saving the session…</p>}
           {error && <p className="mt-5 text-sm text-red-300" role="alert">{error}</p>}
@@ -530,18 +606,20 @@ export function App() {
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
             <h2 className="text-lg font-semibold">Session details</h2>
             <p className="mt-3 break-all font-mono text-xs text-slate-400">{selected.id}</p>
-            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {hasSeparateVoiceTrack(selected) ? 'Meeting screen' : selected.mode === 'audio' ? 'My voice' : 'Video'} · {selected.status} · {duration(selected.durationMs)}</p>
-            {selected.mode === 'video' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. The video contains your microphone only.</p>}
+            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'webcam' ? 'My camera' : selected.captureKind === 'screen-share' || selected.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'} · {selected.status} · {duration(selected.durationMs)}</p>
+            {selected.captureKind === 'screen-share' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. The video contains your microphone only.</p>}
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
             {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
             {recordingUrl && (selected.mode === 'video'
-              ? <video ref={(node) => { playbackRef.current = node; }} className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" />
-              : <audio ref={(node) => { playbackRef.current = node; }} className="mt-4 w-full" controls src={recordingUrl} preload="metadata" />)}
+              ? <video ref={(node) => { playbackRef.current = node; }} className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />
+              : <audio ref={(node) => { playbackRef.current = node; }} className="mt-4 w-full" controls src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />)}
+            {reviewSegments.length > 0 && <div className="mt-3 min-h-16 rounded-xl bg-slate-950 p-4 text-center text-sm text-white" aria-label="Words at current playback time">{activeCaption?.text || 'Play or seek to hear your words here.'}</div>}
             <label className="mt-5 block text-sm font-medium" htmlFor="session-notes">Notes</label>
             <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" disabled={uploading} />
             <div className="mt-4 flex flex-wrap gap-3">
               <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button" disabled={uploading}>Save notes</button>
-              {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950" onClick={download} type="button">Download recording</button>}
+              {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50" onClick={() => void downloadWithTranscript()} type="button" disabled={uploading}>{bundlePreparing ? 'Preparing transcript…' : 'Download video + transcript'}</button>}
+              {recordingUrl && <button className="rounded-xl border border-white/20 px-4 py-2 text-sm text-slate-200" onClick={downloadVideoOnly} type="button">Video only</button>}
               {recordingUrl && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading || (hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes)}>{uploading ? 'Sending for analysis…' : 'Analyze my voice'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
@@ -550,7 +628,7 @@ export function App() {
           </section>
         )}
 
-        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} sessionId={selected.id} onReplayAt={replayAt} />}
+        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} />}
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent sessions</h2><button className="text-sm text-emerald-300 underline" onClick={() => void recover()} type="button">Recover interrupted</button></div>
@@ -558,7 +636,7 @@ export function App() {
             <ul className="mt-4 space-y-3">{sessions.map((session) => (
               <li key={session.id} className="rounded-xl border border-white/10 p-3">
                 <button className="w-full text-left" onClick={() => void selectSession(session)} type="button" disabled={busy || activeStatuses.includes(session.status)}>
-                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {hasSeparateVoiceTrack(session) ? 'Meeting screen' : session.mode === 'audio' ? 'My voice' : 'Video'}</span>
+                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {session.captureKind === 'webcam' ? 'My camera' : session.captureKind === 'screen-share' || session.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'}</span>
                   <span className="mt-1 block text-xs text-slate-400">{session.status} · {duration(session.durationMs)} · {session.id.slice(0, 8)}</span>
                 </button>
               </li>

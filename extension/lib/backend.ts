@@ -94,6 +94,18 @@ export async function startTranscript(sessionId: string, options: UploadOptions 
   });
 }
 
+export async function saveTranscriptEdits(sessionId: string, sourceUpdatedAt: string, texts: string[], options: UploadOptions = {}): Promise<RemoteTranscript> {
+  return request<RemoteTranscript>(`/sessions/${encodeURIComponent(sessionId)}/transcript`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_updated_at: sourceUpdatedAt, texts }),
+  }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
+}
+
 export async function getGrammar(sessionId: string, options: UploadOptions = {}): Promise<RemoteGrammar> {
   return request<RemoteGrammar>(`/sessions/${encodeURIComponent(sessionId)}/grammar`, { method: 'GET' }, {
     baseUrl: options.baseUrl ?? LOCAL_API_URL,

@@ -4,7 +4,7 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import type { CaptureState, ControlReply } from '../../lib/recordingControl';
 
-type PopupCommand = 'CAPTURE_STATUS' | 'CAPTURE_START' | 'CAPTURE_STOP' | 'CAPTURE_OPEN';
+type PopupCommand = 'CAPTURE_STATUS' | 'CAPTURE_START' | 'CAPTURE_START_WEBCAM' | 'CAPTURE_STOP' | 'CAPTURE_OPEN';
 
 const isBusy = (state: CaptureState | null) => state && ['choosing', 'preparing', 'recording', 'processing'].includes(state.phase);
 
@@ -44,7 +44,7 @@ export function App() {
       <header className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Record your meeting.</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Record your practice.</h1>
         </div>
         <div aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-300/15 text-xl text-emerald-300">✦</div>
       </header>
@@ -54,13 +54,16 @@ export function App() {
           <span className={`h-2 w-2 rounded-full ${phase === 'recording' ? 'bg-red-300' : 'bg-emerald-300'}`} />
           {status}
         </div>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Choose your Google Meet or Episoden tab, a window, or the entire screen. Your microphone is recorded separately for analysis.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Record a Meet or Episoden screen, or record yourself with your camera and microphone.</p>
         <p className="mt-3 text-xs leading-5 text-slate-400">For both voices, turn on Share audio in Chrome’s picker. Ask other participants before recording.</p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 
       <div className="mt-5 space-y-3">
-        {!isBusy(capture) && <PrimaryButton onClick={() => void control('CAPTURE_START')}>Start recording</PrimaryButton>}
+        {!isBusy(capture) && <>
+          <PrimaryButton onClick={() => void control('CAPTURE_START')}>Record meeting screen</PrimaryButton>
+          <button className="w-full rounded-xl border border-emerald-300 px-4 py-3 text-sm font-semibold text-emerald-300" onClick={() => void control('CAPTURE_START_WEBCAM')} type="button">Record my camera</button>
+        </>}
         {phase === 'recording' && <button className="w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={() => void control('CAPTURE_STOP')} type="button">Stop recording</button>}
         <button className="w-full rounded-xl border border-white/20 px-4 py-3 text-sm font-semibold text-white" onClick={() => void control('CAPTURE_OPEN')} type="button">{phase === 'completed' ? 'Replay, download, or analyze' : 'Open recordings'}</button>
         {(error || capture?.error) && <p className="text-sm text-red-300" role="alert">{error || capture?.error}</p>}

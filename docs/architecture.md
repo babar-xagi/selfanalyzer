@@ -22,7 +22,7 @@ The extension can record and replay without the backend. Python handles explicit
 
 - `extension/entrypoints/popup/`: React popup with Start, Stop, status, and saved-recording controls.
 - `extension/entrypoints/background.ts`: screen picker, recorder tab handoff, badge, and saved notification.
-- `extension/entrypoints/record/`: microphone-only or selected screen capture, audio mixing, session lifecycle, timer, playback, notes, download, timestamp seeking, and delete.
+- `extension/entrypoints/record/`: microphone-only, webcam, or selected screen capture; audio mixing, session lifecycle, replay, transcript synchronization, correction, bundled export, notes, and delete.
 - `extension/entrypoints/options/`: React settings page.
 - `extension/components/`: shared UI components.
 - `extension/lib/`: shared focus preference, IndexedDB session store, and local API client.
@@ -35,6 +35,8 @@ The settings preference uses extension-origin local storage. Session metadata, n
 After a user clicks Analyze my voice, the extension creates a matching Python session ID, sends only the isolated microphone Blob for screen captures, finishes the API session, and reads it back to verify success. The extension requests host access only to the fixed loopback address, and the documented server command binds there. It stores metadata in SQLite and audio in a local file. An upload failure leaves the browser copies intact, so the user can retry. Once upload succeeds, the extension requests transcription and polls for timestamped results. The backend downloads a local Faster Whisper model on first use, serializes CPU inference, and persists results in SQLite. A failed or interrupted job can be retried. The server does not upload recordings to a cloud service.
 
 After transcription, the extension requests grammar review. FastAPI sends timestamped transcript text to a separate local llama.cpp server on `127.0.0.1:8081`. It asks for structured corrections, checks every original quote against its source segment, derives timestamps from those segments, and stores accepted corrections in SQLite. The extension polls for results and shows the original, correction, natural alternative, explanation, and category. The model server and model files remain on this computer.
+
+Webcam mode records a camera and microphone stream, while a second MediaRecorder saves microphone-only audio for transcription. During replay, the video time selects the current transcript segment. Users can correct misheard words; the local API preserves segment timing, updates the text, and invalidates earlier grammar output so it can be regenerated. The user confirms the words before a single ZIP download is prepared with video, plain text, and timed VTT subtitles. The automatic transcript is a draft because speech recognition cannot guarantee every word.
 
 ## Later data flow
 

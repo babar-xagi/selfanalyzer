@@ -78,6 +78,17 @@ def test_grammar_api_waits_for_transcript_and_persists_review(tmp_path):
     restarted = TestClient(create_app(data_dir=tmp_path, grammar_reviewer=reviewer))
     assert restarted.get(url, headers=HEADERS).json() == completed.json()
 
+    transcript_url = f"/sessions/{session_id}/transcript"
+    transcript = client.get(transcript_url, headers=HEADERS).json()
+    edited = client.patch(transcript_url, headers=HEADERS, json={
+        "source_updated_at": transcript["updated_at"],
+        "texts": ["Um, yesterday I went to university."],
+    })
+    assert edited.status_code == 200
+    assert client.get(url, headers=HEADERS).json()["status"] == "not_started"
+    assert client.post(url, headers=HEADERS).status_code == 202
+    assert calls[-1][0]["text"] == "Um, yesterday I went to university."
+
 
 def test_failed_grammar_review_can_be_retried(tmp_path):
     calls = 0

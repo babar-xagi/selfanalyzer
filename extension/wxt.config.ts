@@ -5,8 +5,8 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
     name: 'Conversation Coach',
-    description: 'Record, replay, and review your meeting conversations.',
-    version: '0.2.0',
+    description: 'Record your camera or meetings, replay, and review your words.',
+    version: '0.3.0',
     permissions: ['desktopCapture', 'notifications', 'storage'],
     host_permissions: ['http://127.0.0.1/*'],
   },

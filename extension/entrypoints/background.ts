@@ -5,7 +5,7 @@ export default defineBackground(() => {
   const key = 'captureState';
   const initial = (): CaptureState => ({
     phase: 'idle', recorderTabId: null, returnTabId: null,
-    sessionId: null, error: null, updatedAt: Date.now(),
+    sessionId: null, error: null, source: null, updatedAt: Date.now(),
   });
 
   async function getState(): Promise<CaptureState> {
@@ -51,7 +51,7 @@ export default defineBackground(() => {
       catch { /* A closed tab can be replaced with a new capture. */ }
     }
     const [active] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
-    const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null });
+    const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: 'screen' });
     try {
       browser.desktopCapture.chooseDesktopMedia(['tab', 'window', 'screen', 'audio'], (streamId, options) => {
         void (async () => {
@@ -73,11 +73,30 @@ export default defineBackground(() => {
     }
   }
 
+  async function startWebcam(): Promise<ControlReply> {
+    const current = await getState();
+    if (['choosing', 'preparing', 'recording', 'processing'].includes(current.phase)) {
+      if (current.recorderTabId === null) return { ok: false, state: current, error: 'A recording is already starting.' };
+      try { await browser.tabs.get(current.recorderTabId); return { ok: false, state: current, error: 'A recording is already in progress.' }; }
+      catch { /* The old recorder tab was closed. */ }
+    }
+    try {
+      const tab = await browser.tabs.create({ url: 'about:blank', active: true });
+      const preparing = await setState({ phase: 'preparing', recorderTabId: tab.id ?? null, returnTabId: null, sessionId: null, error: null, source: 'webcam' });
+      await browser.tabs.update(tab.id!, { url: browser.runtime.getURL('/record.html?webcam=1') });
+      return { ok: true, state: preparing };
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : 'Could not open the camera recorder.';
+      return { ok: false, state: await setState({ phase: 'failed', error }), error };
+    }
+  }
+
   async function handle(message: ControlMessage, sender: Browser.runtime.MessageSender): Promise<ControlReply> {
     const state = await getState();
     switch (message.type) {
       case 'CAPTURE_STATUS': return { ok: true, state };
       case 'CAPTURE_START': return startCapture();
+      case 'CAPTURE_START_WEBCAM': return startWebcam();
       case 'CAPTURE_OPEN':
         await openRecorder(state);
         return { ok: true, state };
@@ -88,7 +107,7 @@ export default defineBackground(() => {
       case 'RECORDER_STARTED':
         if (sender.tab?.id !== state.recorderTabId) return { ok: false, state };
         await setState({ phase: 'recording', sessionId: message.sessionId, error: null });
-        if (state.returnTabId !== null) {
+        if (state.source !== 'webcam' && state.returnTabId !== null) {
           try { await browser.tabs.update(state.returnTabId, { active: true }); }
           catch { /* The meeting tab may have been closed. */ }
         }

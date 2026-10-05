@@ -83,6 +83,11 @@ class TranscriptRead(BaseModel):
     updated_at: datetime | None = None
 
 
+class TranscriptEdit(BaseModel):
+    source_updated_at: datetime
+    texts: list[str] = Field(max_length=10_000)
+
+
 class GrammarRead(BaseModel):
     session_id: UUID
     status: Literal["not_started", "queued", "running", "completed", "failed"]
@@ -426,6 +431,39 @@ def create_app(
                 response.status_code = 202
             elif row["status"] in {"queued", "running"}:
                 response.status_code = 202
+        return read_transcript_data(session_id)
+
+    @router.patch("/sessions/{session_id}/transcript", response_model=TranscriptRead)
+    def correct_transcript(session_id: UUID, payload: TranscriptEdit) -> dict:
+        _get_session(db_path, session_id)
+        with _connect(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, segments_json, updated_at FROM transcripts WHERE session_id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if row is None or row["status"] != "completed":
+                raise HTTPException(status_code=409, detail="Complete transcription before editing it.")
+            if datetime.fromisoformat(row["updated_at"]) != payload.source_updated_at:
+                raise HTTPException(status_code=409, detail="The transcript changed. Reload it before saving edits.")
+            segments = json.loads(row["segments_json"])
+            if len(segments) != len(payload.texts):
+                raise HTTPException(status_code=400, detail="Provide one correction for each transcript segment.")
+            if any(len(text) > 5_000 for text in payload.texts):
+                raise HTTPException(status_code=400, detail="A transcript segment is too long.")
+            corrected = [
+                {**segment, "text": text.strip()}
+                for segment, text in zip(segments, payload.texts, strict=True)
+            ]
+            connection.execute(
+                """UPDATE transcripts SET text = ?, segments_json = ?, updated_at = ?
+                    WHERE session_id = ?""",
+                (
+                    " ".join(segment["text"] for segment in corrected if segment["text"]),
+                    json.dumps(corrected, ensure_ascii=False),
+                    datetime.now(timezone.utc).isoformat(), str(session_id),
+                ),
+            )
         return read_transcript_data(session_id)
 
     @router.get("/sessions/{session_id}/grammar", response_model=GrammarRead)
