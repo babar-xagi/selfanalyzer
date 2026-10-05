@@ -15,9 +15,11 @@ interface Props {
   onReplayAt: (milliseconds: number) => void;
   onSegmentsChange: (segments: TimedLine[]) => void;
   onSessionUpdated: (session: Session) => void;
+  onPrepareTranscript: () => void;
+  preparing: boolean;
 }
 
-export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsChange, onSessionUpdated }: Props) {
+export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsChange, onSessionUpdated, onPrepareTranscript, preparing }: Props) {
   const [transcript, setTranscript] = useState<RemoteTranscript | null>(null);
   const [lines, setLines] = useState<TimedLine[]>([]);
   const [draft, setDraft] = useState<TimedLine[]>([]);
@@ -38,6 +40,7 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
     setLines([]);
     onSegmentsChange([]);
     setError('');
+    if (!session.uploadedAt) return () => { active = false; controller.abort(); };
 
     async function refresh() {
       try {
@@ -68,7 +71,7 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
       controller.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [session.id, retryCount, onSegmentsChange]);
+  }, [session.id, session.uploadedAt, retryCount, onSegmentsChange]);
 
   async function saveEdits() {
     if (transcript?.status !== 'completed') return;
@@ -112,7 +115,11 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
         </div>}
       </div>
       <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of your microphone audio. Listen and correct words that were misheard, then confirm the text before downloading it with the video. Timestamps are approximate.</p>
-      {!transcript && !error && <p className="mt-3 text-sm text-slate-300">Checking transcription…</p>}
+      {!session.uploadedAt && <div className="mt-4">
+        <p className="text-sm text-slate-300">Create a transcript to see your words during replay and include them in the download. The local Python server must be running at 127.0.0.1:8000.</p>
+        <button className="mt-3 rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-300 disabled:opacity-50" type="button" onClick={onPrepareTranscript} disabled={preparing}>{preparing ? 'Connecting…' : 'Create transcript'}</button>
+      </div>}
+      {session.uploadedAt && !transcript && !error && <p className="mt-3 text-sm text-slate-300">Checking transcription…</p>}
       {(transcript?.status === 'queued' || transcript?.status === 'running') &&
         <p className="mt-3 text-sm text-slate-300" role="status">Transcribing on this computer. The first run downloads the speech model and may take a few minutes.</p>}
       {transcript?.status === 'completed' && (lines.length ? <>
@@ -142,10 +149,10 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
       </div>)}
       {(error || transcript?.status === 'failed') && <>
         <p className="mt-3 text-sm text-red-300" role="alert">{error || transcript?.error || 'Transcription failed.'}</p>
-        {transcript?.status === 'failed' && <button className="mt-4 rounded-xl border border-emerald-300 px-4 py-2 text-sm font-semibold text-emerald-300" type="button" onClick={() => {
+        <button className="mt-4 rounded-xl border border-emerald-300 px-4 py-2 text-sm font-semibold text-emerald-300" type="button" onClick={() => {
           retrySessionRef.current = session.id;
           setRetryCount((count) => count + 1);
-        }}>Retry transcription</button>}
+        }}>Retry transcription</button>
       </>}
     </section>
     {transcript?.status === 'completed' && <GrammarPanel key={transcript.updated_at} sessionId={session.id} onReplayAt={onReplayAt} />}

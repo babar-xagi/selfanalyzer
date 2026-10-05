@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
-import { getTranscript, startTranscript, uploadSession, type RemoteTranscript, type TranscriptSegment } from '../../lib/backend';
+import { getTranscript, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
 import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage } from '../../lib/recordingControl';
 import { activeLineIndex, downloadBlob, recordingBundle, transcriptText, transcriptVtt } from '../../lib/transcript';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -489,24 +489,11 @@ export function App() {
     try {
       const session = await ensureUploaded({ ...selected, notes });
       if (mountedRef.current) setNotice(hasSeparateVoiceTrack(session)
-        ? 'Your microphone track was sent for analysis. The full video stays in this browser.'
-        : 'The local Python API received this recording. Transcription is starting.');
+        ? 'Your microphone track was sent to the local server. Transcription is starting below; the full video stays in this browser.'
+        : 'The local Python API received this recording. Transcription is starting below.');
     } catch (cause) {
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The local upload failed.');
     } finally { if (mountedRef.current) setUploading(false); }
-  }
-
-  async function completedTranscript(sessionId: string): Promise<RemoteTranscript> {
-    let transcript = await getTranscript(sessionId);
-    if (transcript.status === 'not_started' || transcript.status === 'failed') transcript = await startTranscript(sessionId);
-    const deadline = Date.now() + 20 * 60_000;
-    while (transcript.status === 'queued' || transcript.status === 'running') {
-      if (Date.now() >= deadline) throw new Error('Transcription is still running. Keep the recorder open and try the download again later.');
-      await new Promise((resolve) => window.setTimeout(resolve, 2500));
-      transcript = await getTranscript(sessionId);
-    }
-    if (transcript.status !== 'completed') throw new Error(transcript.error || 'Transcription failed. You can download the video alone.');
-    return transcript;
   }
 
   async function downloadWithTranscript() {
@@ -516,10 +503,18 @@ export function App() {
     setUploading(true); setBundlePreparing(true);
     try {
       const uploaded = await ensureUploaded(original);
-      const transcript = await completedTranscript(uploaded.id);
+      let transcript = await getTranscript(uploaded.id);
+      if (transcript.status === 'not_started' || transcript.status === 'failed') transcript = await startTranscript(uploaded.id);
+      if (transcript.status === 'queued' || transcript.status === 'running') {
+        if (mountedRef.current) setNotice('Transcription has started. Wait for the timed words below, review them, then click Download video + transcript again.');
+        return;
+      }
+      if (transcript.status !== 'completed') throw new Error(transcript.error || 'Transcription failed. Retry from the transcript panel below.');
       const latest = (await listSessions()).find((session) => session.id === uploaded.id) ?? uploaded;
-      if (!latest.transcriptConfirmedAt || latest.transcriptUpdatedAt !== transcript.updated_at)
-        throw new Error('Transcript is ready. Listen, correct any misheard words, click “I checked these words,” then download the video and transcript together.');
+      if (!latest.transcriptConfirmedAt || latest.transcriptUpdatedAt !== transcript.updated_at) {
+        if (mountedRef.current) setNotice('Transcript is ready below. Listen, correct any misheard words, click “I checked these words,” then click Download video + transcript again.');
+        return;
+      }
       const lines = latest.transcriptEdits?.length === transcript.segments.length ? latest.transcriptEdits : transcript.segments;
       let video: Blob | null = null;
       try { video = await getRecording(uploaded.id); }
@@ -620,15 +615,17 @@ export function App() {
               <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button" disabled={uploading}>Save notes</button>
               {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50" onClick={() => void downloadWithTranscript()} type="button" disabled={uploading}>{bundlePreparing ? 'Preparing transcript…' : 'Download video + transcript'}</button>}
               {recordingUrl && <button className="rounded-xl border border-white/20 px-4 py-2 text-sm text-slate-200" onClick={downloadVideoOnly} type="button">Video only</button>}
-              {recordingUrl && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading || (hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes)}>{uploading ? 'Sending for analysis…' : 'Analyze my voice'}</button>}
+              {recordingUrl && !selected.uploadedAt && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading || (hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes)}>{uploading ? 'Connecting…' : 'Create transcript'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
             {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{hasSeparateVoiceTrack(selected) ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
+            {error && <p className="mt-3 text-sm text-red-300" role="alert">{error}</p>}
+            {notice && <p className="mt-3 text-sm text-emerald-300" role="status">{notice}</p>}
             {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is unavailable. You can still replay and download the full call.</p>}
           </section>
         )}
 
-        {selected?.uploadedAt && <TranscriptPanel key={`${selected.id}-${selected.uploadedAt}`} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} />}
+        {selected && recordingUrl && <TranscriptPanel key={selected.id} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} onPrepareTranscript={() => void sendToLocalApi()} preparing={uploading} />}
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent sessions</h2><button className="text-sm text-emerald-300 underline" onClick={() => void recover()} type="button">Recover interrupted</button></div>
