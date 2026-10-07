@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
-import { getTranscript, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
+import { getRemoteSession, getTranscript, LocalApiError, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
 import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage } from '../../lib/recordingControl';
 import { activeLineIndex, downloadBlob, recordingBundle, transcriptText, transcriptVtt } from '../../lib/transcript';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -78,6 +78,7 @@ export function App() {
   const [bundlePreparing, setBundlePreparing] = useState(false);
   const [playbackMs, setPlaybackMs] = useState(0);
   const [reviewSegments, setReviewSegments] = useState<TranscriptSegment[]>([]);
+  const [allowFullCallTranscript, setAllowFullCallTranscript] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const analysisRecorderRef = useRef<MediaRecorder | null>(null);
   const displayRef = useRef<MediaStream | null>(null);
@@ -419,6 +420,7 @@ export function App() {
     clearPlayback();
     setPlaybackMs(0);
     setReviewSegments([]);
+    setAllowFullCallTranscript(false);
     const token = selectionTokenRef.current;
     setError('');
     setSelected(session);
@@ -465,12 +467,28 @@ export function App() {
   }
 
   async function ensureUploaded(session: Session): Promise<Session> {
-    if (session.uploadedAt) return session;
+    if (session.uploadedAt) {
+      try {
+        const remote = await getRemoteSession(session.id);
+        if (remote.status === 'completed' && remote.has_recording) return session;
+      } catch (cause) {
+        if (!(cause instanceof LocalApiError && cause.status === 404)) throw cause;
+      }
+    }
     let recording: Blob;
     if (hasSeparateVoiceTrack(session)) {
-      const ownVoice = await getAnalysisRecording(session.id);
-      if (!ownVoice) throw new Error('Your separate microphone track was not saved. You can still download the video alone.');
-      recording = ownVoice;
+      let ownVoice: Blob | null = null;
+      try { ownVoice = await getAnalysisRecording(session.id); }
+      catch { /* The full recording can still be available for a local fallback. */ }
+      if (ownVoice?.size) recording = ownVoice;
+      else if (session.captureKind === 'webcam' || session.sharedAudio === false || allowFullCallTranscript) {
+        let fullRecording: Blob | null = null;
+        try { fullRecording = await getRecording(session.id); }
+        catch { /* An in-memory recording may still be available. */ }
+        fullRecording ??= recordingUrl ? await fetch(recordingUrl).then((response) => response.blob()) : null;
+        if (!fullRecording?.size) throw new Error('The saved recording is unavailable. Download the video alone while this tab is open.');
+        recording = fullRecording;
+      } else throw new Error('Your separate microphone track is missing. Select “Use full call audio” below to transcribe both voices, or download the video alone.');
     } else {
       let blob: Blob | null = null;
       try { blob = await getRecording(session.id); }
@@ -615,13 +633,16 @@ export function App() {
               <button className="rounded-xl border border-emerald-300 px-4 py-2 text-sm text-emerald-300" onClick={saveNotes} type="button" disabled={uploading}>Save notes</button>
               {recordingUrl && <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50" onClick={() => void downloadWithTranscript()} type="button" disabled={uploading}>{bundlePreparing ? 'Preparing transcript…' : 'Download video + transcript'}</button>}
               {recordingUrl && <button className="rounded-xl border border-white/20 px-4 py-2 text-sm text-slate-200" onClick={downloadVideoOnly} type="button">Video only</button>}
-              {recordingUrl && !selected.uploadedAt && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading || (hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes)}>{uploading ? 'Connecting…' : 'Create transcript'}</button>}
+              {recordingUrl && !selected.uploadedAt && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading}>{uploading ? 'Connecting…' : 'Create transcript'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
             {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{hasSeparateVoiceTrack(selected) ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
             {error && <p className="mt-3 text-sm text-red-300" role="alert">{error}</p>}
             {notice && <p className="mt-3 text-sm text-emerald-300" role="status">{notice}</p>}
-            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is unavailable. You can still replay and download the full call.</p>}
+            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && (selected.captureKind === 'webcam' || selected.sharedAudio === false)
+              && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is missing. Transcription will copy the saved video to the local Python server on this computer.</p>}
+            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && selected.captureKind !== 'webcam' && selected.sharedAudio !== false && !selected.uploadedAt
+              && <label className="mt-3 flex items-start gap-2 text-xs text-amber-200"><input className="mt-0.5 accent-amber-300" type="checkbox" checked={allowFullCallTranscript} onChange={(event) => setAllowFullCallTranscript(event.target.checked)} />Use full call audio for the transcript. This sends the saved video to the local Python server and may transcribe both voices.</label>}
           </section>
         )}
 

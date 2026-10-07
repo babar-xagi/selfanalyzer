@@ -2,12 +2,28 @@ import type { Session } from './sessions';
 
 export const LOCAL_API_URL = 'http://127.0.0.1:8000';
 
+export async function localApiAvailable(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch(`${LOCAL_API_URL}/health`, { cache: 'no-store', signal });
+    if (!response.ok) return false;
+    const payload: unknown = await response.json();
+    return Boolean(payload && typeof payload === 'object' && 'status' in payload && payload.status === 'ok');
+  } catch { return false; }
+}
+
 export interface RemoteSession {
   session_id: string;
   status: 'created' | 'uploaded' | 'completed';
   has_recording: boolean;
   size_bytes: number | null;
   sha256: string | null;
+}
+
+export class LocalApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'LocalApiError';
+  }
 }
 
 export interface TranscriptSegment {
@@ -73,9 +89,17 @@ async function request<T>(
     const detail = payload && typeof payload === 'object' && 'detail' in payload
       ? String(payload.detail)
       : `HTTP ${response.status}`;
-    throw new Error(`The local Python API rejected the session: ${detail}`);
+    throw new LocalApiError(`The local Python API rejected the session: ${detail}`, response.status);
   }
   return payload as T;
+}
+
+export async function getRemoteSession(sessionId: string, options: UploadOptions = {}): Promise<RemoteSession> {
+  return request<RemoteSession>(`/sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' }, {
+    baseUrl: options.baseUrl ?? LOCAL_API_URL,
+    fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
+  });
 }
 
 export async function getTranscript(sessionId: string, options: UploadOptions = {}): Promise<RemoteTranscript> {

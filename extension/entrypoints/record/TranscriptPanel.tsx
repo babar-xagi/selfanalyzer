@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getTranscript, saveTranscriptEdits, startTranscript, type RemoteTranscript } from '../../lib/backend';
+import { getTranscript, localApiAvailable, saveTranscriptEdits, startTranscript, type RemoteTranscript } from '../../lib/backend';
 import { downloadBlob, activeLineIndex, transcriptText, transcriptVtt, type TimedLine } from '../../lib/transcript';
 import { updateSession, type Session } from '../../lib/sessions';
 import { GrammarPanel } from './GrammarPanel';
@@ -26,9 +26,22 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const retrySessionRef = useRef<string | null>(null);
   const activeIndex = activeLineIndex(lines, playbackMs);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const check = async () => {
+      const online = await localApiAvailable(controller.signal);
+      if (active) setApiOnline(online);
+    };
+    void check();
+    const timer = window.setInterval(() => { void check(); }, 15_000);
+    return () => { active = false; controller.abort(); window.clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -115,6 +128,8 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
         </div>}
       </div>
       <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of your microphone audio. Listen and correct words that were misheard, then confirm the text before downloading it with the video. Timestamps are approximate.</p>
+      {apiOnline === false && <p className="mt-3 rounded-lg border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-200" role="alert">Transcript server is offline. Open Start-Transcript-Server.cmd in your project folder, then retry. Your saved video is still available.</p>}
+      {apiOnline === true && <p className="mt-3 text-xs text-emerald-300" role="status">Local transcript server is connected.</p>}
       {!session.uploadedAt && <div className="mt-4">
         <p className="text-sm text-slate-300">Create a transcript to see your words during replay and include them in the download. The local Python server must be running at 127.0.0.1:8000.</p>
         <button className="mt-3 rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-300 disabled:opacity-50" type="button" onClick={onPrepareTranscript} disabled={preparing}>{preparing ? 'Connecting…' : 'Create transcript'}</button>
@@ -149,6 +164,7 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
       </div>)}
       {(error || transcript?.status === 'failed') && <>
         <p className="mt-3 text-sm text-red-300" role="alert">{error || transcript?.error || 'Transcription failed.'}</p>
+        {error && <button className="mt-4 mr-3 rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" type="button" onClick={onPrepareTranscript} disabled={preparing}>{preparing ? 'Connecting…' : 'Reconnect recording'}</button>}
         <button className="mt-4 rounded-xl border border-emerald-300 px-4 py-2 text-sm font-semibold text-emerald-300" type="button" onClick={() => {
           retrySessionRef.current = session.id;
           setRetryCount((count) => count + 1);

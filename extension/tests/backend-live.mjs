@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const url = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`;
-const { uploadSession, getTranscript, getGrammar } = await import(url);
+const { uploadSession, getRemoteSession, getTranscript, getGrammar, LocalApiError } = await import(url);
 
 const now = Date.now();
 const session = {
@@ -37,6 +37,11 @@ assert.equal(remote.status, 'completed');
 assert.equal(remote.size_bytes, recording.size);
 assert.equal(remote.has_recording, true);
 assert.match(remote.sha256, /^[0-9a-f]{64}$/);
+assert.equal((await getRemoteSession(session.id, { fetchImpl: browserStyleFetch })).status, 'completed');
+await assert.rejects(
+  getRemoteSession(randomUUID(), { fetchImpl: browserStyleFetch }),
+  (error) => error instanceof LocalApiError && error.status === 404,
+);
 const transcript = await getTranscript(session.id, { fetchImpl: browserStyleFetch });
 assert.equal(transcript.session_id, session.id);
 assert.equal(transcript.status, 'not_started');

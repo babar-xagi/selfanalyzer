@@ -6,7 +6,7 @@ export default defineConfig({
   manifest: {
     name: 'Conversation Coach',
     description: 'Record your camera or meetings, replay, and review your words.',
-    version: '0.3.1',
+    version: '0.3.2',
     permissions: ['desktopCapture', 'notifications', 'storage'],
     host_permissions: ['http://127.0.0.1/*'],
   },
