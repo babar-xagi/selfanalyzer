@@ -15,7 +15,7 @@ export interface Session {
   notes: string;
   error: string | null;
   uploadedAt?: number | null;
-  captureKind?: 'microphone' | 'episoden-tab' | 'screen-share' | 'webcam';
+  captureKind?: 'microphone' | 'episoden-tab' | 'screen-share' | 'chatgpt-tab' | 'webcam';
   transcriptEdits?: { start_ms: number; end_ms: number; text: string }[];
   transcriptUpdatedAt?: string | null;
   transcriptConfirmedAt?: number | null;
@@ -25,7 +25,7 @@ export interface Session {
 }
 
 export function hasSeparateVoiceTrack(session: Session): boolean {
-  return session.captureKind === 'episoden-tab' || session.captureKind === 'screen-share' || session.captureKind === 'webcam';
+  return session.captureKind === 'episoden-tab' || session.captureKind === 'screen-share' || session.captureKind === 'chatgpt-tab' || session.captureKind === 'webcam';
 }
 
 interface Chunk { sessionId: string; index: number; blob: Blob }

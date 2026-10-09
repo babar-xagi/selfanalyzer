@@ -2,7 +2,7 @@
 
 Conversation Coach records a Google Meet or Episoden call, or your own camera and voice, so you can replay it and review your English.
 
-**Current status:** The extension can capture a selected tab, window, full screen, or your webcam. It saves your microphone separately for a timed transcript and analysis. See the [roadmap](docs/roadmap.md) for verification status.
+**Current status:** The extension can capture a ChatGPT voice tab with its audio, another meeting tab, a window, full screen, or your webcam. It saves your microphone separately for a timed transcript and analysis. See the [roadmap](docs/roadmap.md) for verification status.
 
 ## Who it is for
 
@@ -10,7 +10,7 @@ English learners who already practice speaking with other people online and want
 
 ## Current extension
 
-Open your meeting and ask participants before recording. In the extension popup, click **Record meeting screen**, choose the meeting tab, a window, or the full screen in Chrome's picker, and turn on **Share audio**. Allow microphone access when Chrome asks. The recorder briefly opens its own tab, then returns you to the meeting while it keeps recording. For a video of yourself, click **Record my camera** and allow camera and microphone access; the recorder tab shows a live preview. Open the popup again and click **Stop recording**, or stop sharing from Chrome. A Chrome notification and the popup show when the recording is saved. Choose **Replay, download, or analyze** to open it. The recorder tab must stay open while capture runs. **My voice only** remains available from the recorder page.
+Open your meeting and ask participants before recording. For ChatGPT voice in Chrome, click **Record ChatGPT tab + both voices**, choose the ChatGPT tab, and leave **Share tab audio** enabled. The recording will not start if tab audio is missing. For other meetings, click **Record meeting screen**, choose the meeting tab, a window, or the full screen in Chrome's picker, and turn on **Share audio**. Allow microphone access when Chrome asks. The recorder briefly opens its own tab, then returns you to the meeting while it keeps recording. For a video of yourself, click **Record my camera** and allow camera and microphone access; the recorder tab shows a live preview. Open the popup again and click **Stop recording**, or stop sharing from Chrome. A Chrome notification and the popup show when the recording is saved. Choose **Replay, download, or analyze** to open it. The recorder tab must stay open while capture runs. **My voice only** remains available from the recorder page.
 
 Chrome's source audio options vary by source and platform. A Chrome tab with **Share tab audio** is the best choice for both meeting voices. If source audio was not shared, the extension records the screen and your microphone and marks the session as microphone only.
 
@@ -20,19 +20,24 @@ During screen and webcam capture, the extension also saves an isolated microphon
 
 Recordings and metadata are stored in this browser's IndexedDB. The app saves full-call and microphone chunks as recording runs. If the tab closes unexpectedly, reopen the recorder and allow up to 30 seconds for recovery, or use **Recover interrupted**. Only chunks already saved can be restored; the last moments may be missing. Browser storage can be cleared or evicted, so download any recording you need to keep elsewhere.
 
-### Run locally
+### Install locally on Windows
 
-Requires Node.js 20+, npm, and Python 3.11+. Start the API from `backend/` in PowerShell:
+Requires Node.js 20+, npm, and Python 3.11+. Install the Python dependencies once from `backend/` in PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The API responds at `http://127.0.0.1:8000/health`. For uv in WSL, use `uv sync --extra dev` and `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` from `backend/`. See [backend instructions](backend/README.md).
+The extension uses the Windows Python environment at `backend/.venv`. See [backend instructions](backend/README.md).
 
-On Windows, after the one-time Python setup, you can double-click `Start-Transcript-Server.cmd` instead of typing the server command. Keep its window open while creating or downloading transcripts. To start the transcript server automatically when you sign in to Windows, run `backend/scripts/install_transcript_autostart.ps1` once in PowerShell. This user-level setting launches `pythonw.exe` and binds only to `127.0.0.1`; run `backend/scripts/uninstall_transcript_autostart.ps1` to remove it. If `http://127.0.0.1:8000/health` does not show `{"status":"ok"}`, the extension cannot create a transcript. The video still remains in browser storage and can be downloaded with **Video only**.
+After loading the extension, copy its 32-letter ID from `chrome://extensions` and register the local companion once from the repository root:
+
+```powershell
+.\backend\scripts\install_native_companion.ps1 -ExtensionId YOUR_EXTENSION_ID
+```
+
+The companion starts the Python API when recording or transcript review needs it. Stopping the recording stops the API; opening a saved transcript or clicking **Create transcript** starts it again. Closing the recorder tab or disabling the extension closes the connection and stops the API it started. It runs only at `127.0.0.1:8000` and does not start when Windows signs in. To remove the registration, run `backend/scripts/uninstall_native_companion.ps1`.
 
 The video and transcript ZIP needs only the FastAPI server. Grammar feedback also needs the local model server. From `backend/`, run `.\scripts\setup_grammar_model.ps1` once, then `.\scripts\start_grammar_model.ps1` in a separate terminal. The model server listens on `127.0.0.1:8081`. Model setup downloads the CPU runtime and model weights; session media stays local.
 
@@ -50,9 +55,9 @@ npm run typecheck
 npm run build
 ```
 
-To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. If an older build is already loaded, replace its files and click its Reload icon. Test **Record meeting screen** with a tab, window, or screen and its audio option. After recording starts, the meeting tab returns to the front. Test **Record my camera** separately and confirm its live preview. Stop from the popup, then use the notification or **Replay, download, or analyze** to play the saved video. Create, correct, and confirm the timed transcript, then download the ZIP. Open the WebM, TXT, and VTT files from the ZIP. Reopen the recorder to confirm the session remains. Also test denied camera, microphone, and screen permissions.
+To load the build manually in Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `extension/.output/chrome-mv3`. If an older build is already loaded, replace its files and click its Reload icon. Install the companion for the ID shown there. Test **Record ChatGPT tab + both voices** with the ChatGPT tab and **Share tab audio** checked. Test **Record meeting screen** with another tab, window, or screen and its audio option. After recording starts, the meeting tab returns to the front. Test **Record my camera** separately and confirm its live preview. Stop from the popup, then use the notification or **Replay, download, or analyze** to play the saved video. Create, correct, and confirm the timed transcript, then download the ZIP. Open the WebM, TXT, and VTT files from the ZIP. Reopen the recorder to confirm the session remains. Also test denied camera, microphone, and screen permissions.
 
-With the local transcript server running, select a saved session and click **Create transcript**. For screen and webcam captures with a separate microphone track, the API receives that audio while the full video stays in your browser. If the track is missing, the recorder explains when it will use the video on the local server or asks you to opt in to full call transcription. The transcript appears below the recording after transcription. The first transcription downloads the English speech model, so it can take a few minutes; later sessions reuse the downloaded model. If connection fails, start the server and use **Retry transcription**. The extension requests host access only to `http://127.0.0.1/*` for this connection. Grammar corrections also require the separate local model server.
+Select a saved session and click **Create transcript**. For screen and webcam captures with a separate microphone track, the API receives that audio while the full video stays in your browser. If the track is missing, the recorder explains when it will use the video on the local server or asks you to opt in to full call transcription. The transcript appears below the recording after transcription. The first transcription downloads the English speech model, so it can take a few minutes; later sessions reuse the downloaded model. If connection fails, check the companion setup and use **Retry transcription**. The extension requests host access only to `http://127.0.0.1/*` for this connection. Grammar corrections also require the separate local model server.
 
 ## Project documents
 

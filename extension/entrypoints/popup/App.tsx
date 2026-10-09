@@ -4,7 +4,7 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import type { CaptureState, ControlReply } from '../../lib/recordingControl';
 
-type PopupCommand = 'CAPTURE_STATUS' | 'CAPTURE_START' | 'CAPTURE_START_WEBCAM' | 'CAPTURE_STOP' | 'CAPTURE_OPEN';
+type PopupCommand = 'CAPTURE_STATUS' | 'CAPTURE_START' | 'CAPTURE_START_TAB' | 'CAPTURE_START_WEBCAM' | 'CAPTURE_STOP' | 'CAPTURE_OPEN';
 
 const isBusy = (state: CaptureState | null) => state && ['choosing', 'preparing', 'recording', 'processing'].includes(state.phase);
 
@@ -54,13 +54,14 @@ export function App() {
           <span className={`h-2 w-2 rounded-full ${phase === 'recording' ? 'bg-red-300' : 'bg-emerald-300'}`} />
           {status}
         </div>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Record a Meet or Episoden screen, or record yourself with your camera and microphone.</p>
-        <p className="mt-3 text-xs leading-5 text-slate-400">For both voices, turn on Share audio in Chrome’s picker. Ask other participants before recording.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Record a ChatGPT voice tab, a meeting screen, or your own camera.</p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">For ChatGPT voice, choose its tab and keep Share tab audio on. Ask other people before recording their calls.</p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 
       <div className="mt-5 space-y-3">
         {!isBusy(capture) && <>
+          <PrimaryButton onClick={() => void control('CAPTURE_START_TAB')}>Record ChatGPT tab + both voices</PrimaryButton>
           <PrimaryButton onClick={() => void control('CAPTURE_START')}>Record meeting screen</PrimaryButton>
           <button className="w-full rounded-xl border border-emerald-300 px-4 py-3 text-sm font-semibold text-emerald-300" onClick={() => void control('CAPTURE_START_WEBCAM')} type="button">Record my camera</button>
         </>}

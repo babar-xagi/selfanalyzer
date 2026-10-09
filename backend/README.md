@@ -2,19 +2,18 @@
 
 For screen and webcam recordings, the extension normally sends only the separate microphone audio to Python; the complete video remains in the browser for replay and download. If that track is missing, a webcam video or a meeting video without shared source audio can be used locally as a fallback. For a meeting with shared audio, the user must explicitly choose full call transcription, which may include both voices. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
 
-## Run on Windows
+## Install on Windows
 
 From `backend/`:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Or with uv in WSL, run `uv sync --extra dev` and `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` from this directory. The extension connects to `http://127.0.0.1:8000`, so the server must be reachable at that Windows address.
+The Chrome companion uses this Windows virtual environment and starts the API only when the extension needs it. WSL Python cannot be launched through this Windows companion.
 
-On Windows, `scripts/install_transcript_autostart.ps1` registers the local API under the current user's sign-in startup. It uses `pythonw.exe` and writes logs to `data/transcript-server.log`. Use `scripts/uninstall_transcript_autostart.ps1` to remove that startup entry. The API runs only on `127.0.0.1:8000`.
+Load the extension, copy its ID from `chrome://extensions`, then run `scripts/install_native_companion.ps1 -ExtensionId YOUR_EXTENSION_ID` once. The script builds `native/ConversationCoachHost.cs` using the installed .NET Framework compiler and registers it for this Chrome extension under the current user's registry. The API runs only on `127.0.0.1:8000`. When recording stops or the recorder tab closes, the companion stops the API it started. A transcript action starts it again. Use `scripts/uninstall_native_companion.ps1` to remove the registration. Diagnostics are written to `data/native-host.log`.
 
 ## Local grammar model
 

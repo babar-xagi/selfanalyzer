@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getGrammar, startGrammar, type RemoteGrammar } from '../../lib/backend';
+import { ensureLocalCompanion } from '../../lib/localCompanion';
 
 function timestamp(milliseconds: number): string {
   const seconds = Math.floor(milliseconds / 1000);
@@ -27,6 +28,7 @@ export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onR
 
     async function refresh() {
       try {
+        await ensureLocalCompanion();
         let current = await getGrammar(sessionId, { signal: controller.signal });
         if (current.status === 'not_started' || (retryFailed && current.status === 'failed')) {
           retryFailed = false;

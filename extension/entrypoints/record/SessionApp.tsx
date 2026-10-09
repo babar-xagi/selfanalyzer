@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
+import { ensureLocalCompanion, stopLocalCompanion } from '../../lib/localCompanion';
 import { getRemoteSession, getTranscript, LocalApiError, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
 import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage } from '../../lib/recordingControl';
 import { activeLineIndex, downloadBlob, recordingBundle, transcriptText, transcriptVtt } from '../../lib/transcript';
@@ -174,6 +175,7 @@ export function App() {
         if (analysisRecorder.state !== 'inactive') analysisRecorder.stop();
       }
       releaseStreams();
+      stopLocalCompanion();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
     };
   }, []);
@@ -197,7 +199,7 @@ export function App() {
   }, [status]);
 
   async function startRecording(launch?: CaptureLaunch) {
-    const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' ? 'screen' : choice;
+    const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab' ? 'screen' : choice;
     const recordingMode: CaptureMode = captureChoice === 'audio' ? 'audio' : 'video';
     setError(''); setNotice(''); setElapsedMs(0);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -216,7 +218,7 @@ export function App() {
         audioContextRef.current = new AudioContext();
         // The popup picker gives this page a one-use desktop stream ID. The
         // manual button path uses getDisplayMedia while it has user activation.
-        const display = launch?.kind === 'screen'
+        const display = launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab'
           ? await navigator.mediaDevices.getUserMedia({
               video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints,
               audio: launch.includeAudio ? { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false,
@@ -226,6 +228,10 @@ export function App() {
         if (!videoTrack) {
           stopStream(display);
           throw new Error('No screen video was shared. Choose a tab, window, or screen.');
+        }
+        if (launch?.kind === 'chatgpt-tab' && !display.getAudioTracks().length) {
+          stopStream(display);
+          throw new Error('Chrome did not provide ChatGPT tab audio. Choose its tab with Share tab audio enabled and try again.');
         }
         if (!mountedRef.current) { stopStream(display); return; }
         displayRef.current = display;
@@ -242,7 +248,7 @@ export function App() {
     }
 
     let session: Session;
-    try { session = await createSession(recordingMode, captureChoice === 'screen' ? 'screen-share' : captureChoice === 'webcam' ? 'webcam' : 'microphone'); }
+    try { session = await createSession(recordingMode, launch?.kind === 'chatgpt-tab' ? 'chatgpt-tab' : captureChoice === 'screen' ? 'screen-share' : captureChoice === 'webcam' ? 'webcam' : 'microphone'); }
     catch {
       releaseStreams(); setStatus('idle');
       setError('Local storage is unavailable. Free space or enable browser storage, then try again.');
@@ -347,6 +353,7 @@ export function App() {
           if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
           await analysisStopped;
           releaseStreams();
+          stopLocalCompanion();
           recorderRef.current = null;
           activeIdRef.current = null;
           const measuredMs = Math.max(0, performance.now() - startedRef.current);
@@ -393,6 +400,10 @@ export function App() {
       recorder.start(1000);
       startedRef.current = performance.now();
       setStatus('recording');
+      void ensureLocalCompanion().catch((cause: unknown) => {
+        if (mountedRef.current && recorder.state === 'recording')
+          setNotice(`Recording is running, but transcripts may need setup: ${cause instanceof Error ? cause.message : 'The local companion could not start.'}`);
+      });
       if (captureChoice === 'screen' && !displayRef.current?.getAudioTracks().length) setNotice('The selected source did not share meeting audio. This recording will include your microphone only.');
       if (launch) reportControl({ type: 'RECORDER_STARTED', sessionId: session.id } satisfies ControlMessage);
       await refreshSessions();
@@ -401,6 +412,7 @@ export function App() {
       if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
       analysisRecorderRef.current = null;
       releaseStreams();
+      stopLocalCompanion();
       recorderRef.current = null;
       activeIdRef.current = null;
       const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, captureChoice === 'webcam' ? 'camera' : 'microphone');
@@ -467,6 +479,7 @@ export function App() {
   }
 
   async function ensureUploaded(session: Session): Promise<Session> {
+    await ensureLocalCompanion();
     if (session.uploadedAt) {
       try {
         const remote = await getRemoteSession(session.id);
@@ -619,7 +632,7 @@ export function App() {
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
             <h2 className="text-lg font-semibold">Session details</h2>
             <p className="mt-3 break-all font-mono text-xs text-slate-400">{selected.id}</p>
-            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'webcam' ? 'My camera' : selected.captureKind === 'screen-share' || selected.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'} · {selected.status} · {duration(selected.durationMs)}</p>
+            <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'webcam' ? 'My camera' : selected.captureKind === 'chatgpt-tab' ? 'ChatGPT tab' : selected.captureKind === 'screen-share' || selected.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'} · {selected.status} · {duration(selected.durationMs)}</p>
             {selected.captureKind === 'screen-share' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. The video contains your microphone only.</p>}
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
             {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
@@ -654,7 +667,7 @@ export function App() {
             <ul className="mt-4 space-y-3">{sessions.map((session) => (
               <li key={session.id} className="rounded-xl border border-white/10 p-3">
                 <button className="w-full text-left" onClick={() => void selectSession(session)} type="button" disabled={busy || activeStatuses.includes(session.status)}>
-                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {session.captureKind === 'webcam' ? 'My camera' : session.captureKind === 'screen-share' || session.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'}</span>
+                  <span className="block text-sm font-medium">{new Date(session.createdAt).toLocaleString()} · {session.captureKind === 'webcam' ? 'My camera' : session.captureKind === 'chatgpt-tab' ? 'ChatGPT tab' : session.captureKind === 'screen-share' || session.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'}</span>
                   <span className="mt-1 block text-xs text-slate-400">{session.status} · {duration(session.durationMs)} · {session.id.slice(0, 8)}</span>
                 </button>
               </li>

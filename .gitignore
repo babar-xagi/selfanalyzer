@@ -48,6 +48,7 @@ next-env.d.ts
 /backend/.tmp/
 /backend/.pip-cache/
 /backend/data/
+/backend/native/bin/
 /backend/.pytest_cache/
 __pycache__/
 *.py[cod]

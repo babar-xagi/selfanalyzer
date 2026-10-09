@@ -81,7 +81,7 @@ async function request<T>(
     });
   } catch (cause) {
     const reason = cause instanceof Error ? ` (${cause.message})` : '';
-    throw new Error(`The local Python API is unavailable. Start it on 127.0.0.1:8000 and try again.${reason}`);
+    throw new Error(`The local Python API is unavailable. The recorder starts it automatically when needed; retry this action.${reason}`);
   }
 
   const payload: unknown = await response.json().catch(() => null);
