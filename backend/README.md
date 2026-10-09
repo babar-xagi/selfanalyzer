@@ -1,6 +1,6 @@
 # Local Python API
 
-For screen and webcam recordings, the extension normally sends only the separate microphone audio to Python; the complete video remains in the browser for replay and download. If that track is missing, a webcam video or a meeting video without shared source audio can be used locally as a fallback. For a meeting with shared audio, the user must explicitly choose full call transcription, which may include both voices. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
+For ChatGPT tab recordings, the extension sends a separate mixed audio track with both voices to Python and keeps the video in the browser for replay and download. For other screen and webcam recordings, it normally sends only the separate microphone audio. If a separate track is missing, a webcam or ChatGPT video can be used locally as a fallback. For another meeting with shared audio, the user must explicitly choose full call transcription. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
 
 ## Install on Windows
 
@@ -13,7 +13,7 @@ python -m venv .venv
 
 The Chrome companion uses this Windows virtual environment and starts the API only when the extension needs it. WSL Python cannot be launched through this Windows companion.
 
-Load the extension, copy its ID from `chrome://extensions`, then run `scripts/install_native_companion.ps1 -ExtensionId YOUR_EXTENSION_ID` once. The script builds `native/ConversationCoachHost.cs` using the installed .NET Framework compiler and registers it for this Chrome extension under the current user's registry. The API runs only on `127.0.0.1:8000`. When recording stops or the recorder tab closes, the companion stops the API it started. A transcript action starts it again. Use `scripts/uninstall_native_companion.ps1` to remove the registration. Diagnostics are written to `data/native-host.log`.
+The development extension now has fixed ID `cdgiokmmcnaimhhcjdokjogehhephppp`. Run `scripts/install_native_companion.ps1 -ExtensionId cdgiokmmcnaimhhcjdokjogehhephppp` once. The script builds `native/ConversationCoachHost.cs` using the installed .NET Framework compiler and registers it for Chrome under the current user's registry. You can use `-AdditionalExtensionIds ID1,ID2` while migrating older unpacked installs. The API runs only on `127.0.0.1:8000`. It stays available for automatic transcription and stops when the recorder tab or extension connection closes. Use `scripts/uninstall_native_companion.ps1` to remove the registration. Diagnostics are written to `data/native-host.log`.
 
 ## Local grammar model
 
@@ -23,13 +23,13 @@ Milestone 007 uses [llama.cpp](https://github.com/ggml-org/llama.cpp) with the o
 .\scripts\setup_grammar_model.ps1
 ```
 
-This downloads a CPU runtime and a roughly 2 GB model into ignored `backend/data/grammar/`. It is a one-time download. In a separate terminal, run:
+This downloads a CPU runtime and a roughly 2 GB model into ignored `backend/data/grammar/`. It is a one-time download. The extension's native companion starts the model when grammar review begins and stops it when the recorder tab closes. For manual backend development only, run:
 
 ```powershell
 .\scripts\start_grammar_model.ps1
 ```
 
-The model server listens only at `127.0.0.1:8081`. Leave it running alongside FastAPI. The extension starts grammar review when a transcript finishes. Model output is checked against exact transcript quotes before corrections are saved. Suggestions can still be wrong, especially if speech recognition misheard a word; compare them with the recording.
+The model server listens only at `127.0.0.1:8081`. The extension starts grammar review when a transcript finishes. Model output is checked against exact transcript quotes before corrections are saved. Suggestions can still be wrong, especially if speech recognition misheard a word; compare them with the recording.
 
 ## API
 

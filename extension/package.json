@@ -1,7 +1,7 @@
 {
   "name": "conversation-coach-extension",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test:sessions": "node tests/sessions.test.mjs",
     "test:transcript": "node tests/transcript.test.mjs",
+    "test:manifest": "node tests/manifest.test.mjs",
     "test:backend-live": "node tests/backend-live.mjs",
     "postinstall": "wxt prepare"
   },

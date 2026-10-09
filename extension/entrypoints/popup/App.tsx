@@ -55,7 +55,7 @@ export function App() {
           {status}
         </div>
         <p className="mt-3 text-sm leading-6 text-slate-300">Record a ChatGPT voice tab, a meeting screen, or your own camera.</p>
-        <p className="mt-3 text-xs leading-5 text-slate-400">For ChatGPT voice, choose its tab and keep Share tab audio on. Ask other people before recording their calls.</p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">Open the ChatGPT tab first. One click captures that tab, its voice, your camera, and microphone. Chrome may ask for camera and microphone permission the first time.</p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 

@@ -27,9 +27,11 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const retrySessionRef = useRef<string | null>(null);
   const activeIndex = activeLineIndex(lines, playbackMs);
+  const completeText = lines.length ? transcriptText(lines).trim() : transcript?.text ?? '';
 
   useEffect(() => {
     const controller = new AbortController();
@@ -108,6 +110,13 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
     downloadBlob(new Blob([content], { type: format === 'txt' ? 'text/plain;charset=utf-8' : 'text/vtt;charset=utf-8' }), `conversation-coach-${session.id}.${format}`);
   }
 
+  async function copyTranscript() {
+    try {
+      await navigator.clipboard.writeText(completeText);
+      setCopied(true);
+    } catch { setError('Could not copy automatically. Select the transcript text below and copy it.'); }
+  }
+
   return <>
     <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6" aria-label="Transcript">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -117,14 +126,21 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
           <button className="rounded-lg border border-sky-300 px-3 py-2 text-xs font-semibold text-sky-200" type="button" onClick={() => downloadTranscript('vtt')}>Download subtitles</button>
         </div>}
       </div>
-      <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of your microphone audio. Listen and correct words that were misheard, then confirm the text before downloading it with the video. Timestamps are approximate.</p>
+      <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of {session.captureKind === 'chatgpt-tab' ? 'both voices' : 'your microphone audio'}. Listen and correct any misheard words. Click a timed line to replay pronunciation. Speaker labels and automatic pronunciation scores are not available. Timestamps are approximate.</p>
       {!session.uploadedAt && <div className="mt-4">
-        <p className="text-sm text-slate-300">Create a transcript to see your words during replay and include them in the download. The local server starts automatically.</p>
+        <p className="text-sm text-slate-300">{preparing ? 'Preparing your transcript automatically…' : 'The transcript starts automatically after recording. Use this button to retry or prepare an older session.'}</p>
         <button className="mt-3 rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-300 disabled:opacity-50" type="button" onClick={onPrepareTranscript} disabled={preparing}>{preparing ? 'Connecting…' : 'Create transcript'}</button>
       </div>}
       {session.uploadedAt && !transcript && !error && <p className="mt-3 text-sm text-slate-300">Checking transcription…</p>}
       {(transcript?.status === 'queued' || transcript?.status === 'running') &&
         <p className="mt-3 text-sm text-slate-300" role="status">Transcribing on this computer. The first run downloads the speech model and may take a few minutes.</p>}
+      {transcript?.status === 'completed' && <div className="mt-4">
+        <div className="flex items-center justify-between gap-3">
+          <label className="text-sm font-semibold text-white" htmlFor={`complete-transcript-${session.id}`}>Complete transcript</label>
+          <button className="rounded-lg bg-emerald-300 px-3 py-2 text-sm font-semibold text-slate-950" type="button" onClick={() => void copyTranscript()} disabled={!completeText}>{copied ? 'Copied' : 'Copy transcript'}</button>
+        </div>
+        <textarea id={`complete-transcript-${session.id}`} className="mt-2 min-h-40 w-full rounded-xl border border-white/20 bg-slate-950 p-3 text-sm leading-6 text-white" value={completeText} readOnly aria-label="Complete transcript text" />
+      </div>}
       {transcript?.status === 'completed' && (lines.length ? <>
         {!editing && <div className="mt-4 flex flex-wrap items-center gap-4">
           <button className="text-sm text-emerald-300 underline" type="button" onClick={() => { setDraft(lines.map((line) => ({ ...line }))); setEditing(true); }}>Correct transcript words</button>

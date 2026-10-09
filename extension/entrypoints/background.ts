@@ -43,7 +43,7 @@ export default defineBackground(() => {
     await browser.tabs.create({ url: url.toString() });
   }
 
-  async function startCapture(tabAudioRequired = false): Promise<ControlReply> {
+  async function startCapture(): Promise<ControlReply> {
     const current = await getState();
     if (['choosing', 'preparing', 'recording', 'processing'].includes(current.phase)) {
       if (current.phase === 'choosing' || current.recorderTabId === null) return { ok: false, state: current, error: 'A recording is already starting.' };
@@ -51,19 +51,13 @@ export default defineBackground(() => {
       catch { /* A closed tab can be replaced with a new capture. */ }
     }
     const [active] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
-    const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: tabAudioRequired ? 'chatgpt-tab' : 'screen' });
+    const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: 'screen' });
     try {
-      browser.desktopCapture.chooseDesktopMedia(tabAudioRequired ? ['tab', 'audio'] : ['tab', 'window', 'screen', 'audio'], (streamId, options) => {
+      browser.desktopCapture.chooseDesktopMedia(['tab', 'window', 'screen', 'audio'], (streamId, options) => {
         void (async () => {
           if (!streamId) { await setState({ phase: 'idle' }); return; }
-          if (tabAudioRequired && !options.canRequestAudioTrack) {
-            const error = 'ChatGPT tab audio was not shared. Select the ChatGPT tab with Share tab audio enabled and try again.';
-            await setState({ phase: 'failed', error });
-            notify('ChatGPT audio was not shared', error);
-            return;
-          }
           const url = new URL(browser.runtime.getURL('/record.html'));
-          url.hash = new URLSearchParams({ capture: streamId, audio: options.canRequestAudioTrack ? '1' : '0', kind: tabAudioRequired ? 'chatgpt-tab' : 'screen' }).toString();
+          url.hash = new URLSearchParams({ capture: streamId, audio: options.canRequestAudioTrack ? '1' : '0', kind: 'screen' }).toString();
           const tab = await browser.tabs.create({ url: url.toString(), active: true });
           await setState({ phase: 'preparing', recorderTabId: tab.id ?? null });
         })().catch(async (cause: unknown) => {
@@ -76,6 +70,36 @@ export default defineBackground(() => {
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : 'Could not open the screen picker.';
       return { ok: false, state: await setState({ phase: 'failed', error }), error };
+    }
+  }
+
+  async function startChatGptCapture(): Promise<ControlReply> {
+    const current = await getState();
+    if (['choosing', 'preparing', 'recording', 'processing'].includes(current.phase))
+      return { ok: false, state: current, error: 'A recording is already starting or running.' };
+    const [active] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+    const host = active?.url ? new URL(active.url).hostname : '';
+    if (!active?.id || !['chatgpt.com', 'chat.openai.com'].includes(host)) {
+      const error = 'Open your ChatGPT voice tab, then click Record ChatGPT tab + both voices.';
+      return { ok: false, state: await setState({ phase: 'failed', error }), error };
+    }
+    let recorderTabId: number | null = null;
+    try {
+      const tab = await browser.tabs.create({ url: browser.runtime.getURL('/record.html?pending=1'), active: false });
+      recorderTabId = tab.id ?? null;
+      if (recorderTabId === null) throw new Error('Chrome could not open the recorder.');
+      const preparing = await setState({ phase: 'preparing', recorderTabId, returnTabId: active.id, sessionId: null, error: null, source: 'chatgpt-tab' });
+      const streamId = await browser.tabCapture.getMediaStreamId({ targetTabId: active.id, consumerTabId: recorderTabId });
+      const url = new URL(browser.runtime.getURL('/record.html'));
+      url.hash = new URLSearchParams({ capture: streamId, audio: '1', kind: 'chatgpt-tab' }).toString();
+      // Focus briefly so Chrome can show camera/microphone permission prompts.
+      // RECORDER_STARTED returns the user to the ChatGPT tab automatically.
+      await browser.tabs.update(recorderTabId, { url: url.toString(), active: true });
+      return { ok: true, state: preparing };
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : 'Could not capture the ChatGPT tab.';
+      if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
+      return { ok: false, state: await setState({ phase: 'failed', recorderTabId: null, error }), error };
     }
   }
 
@@ -102,7 +126,7 @@ export default defineBackground(() => {
     switch (message.type) {
       case 'CAPTURE_STATUS': return { ok: true, state };
       case 'CAPTURE_START': return startCapture();
-      case 'CAPTURE_START_TAB': return startCapture(true);
+      case 'CAPTURE_START_TAB': return startChatGptCapture();
       case 'CAPTURE_START_WEBCAM': return startWebcam();
       case 'CAPTURE_OPEN':
         await openRecorder(state);

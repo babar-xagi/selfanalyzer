@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
+import { compositeTabAndCamera } from '../../lib/compositeVideo';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import { ensureLocalCompanion, stopLocalCompanion } from '../../lib/localCompanion';
 import { getRemoteSession, getTranscript, LocalApiError, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
@@ -86,6 +87,7 @@ export function App() {
   const webcamRef = useRef<MediaStream | null>(null);
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const mixedRef = useRef<MediaStream | null>(null);
+  const compositeStopRef = useRef<(() => void) | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const playbackRef = useRef<HTMLMediaElement | null>(null);
@@ -98,6 +100,8 @@ export function App() {
   const focus = getPracticeFocus();
 
   function releaseStreams() {
+    compositeStopRef.current?.();
+    compositeStopRef.current = null;
     stopStream(microphoneRef.current);
     microphoneRef.current = null;
     stopStream(displayRef.current);
@@ -216,12 +220,14 @@ export function App() {
     if (captureChoice === 'screen') {
       try {
         audioContextRef.current = new AudioContext();
-        // The popup picker gives this page a one-use desktop stream ID. The
-        // manual button path uses getDisplayMedia while it has user activation.
+        // The popup supplies a one-use Chrome stream ID. The manual dashboard
+        // path uses getDisplayMedia while its button has user activation.
         const display = launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab'
           ? await navigator.mediaDevices.getUserMedia({
-              video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints,
-              audio: launch.includeAudio ? { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false,
+              video: { mandatory: launch.kind === 'chatgpt-tab'
+                ? { chromeMediaSource: 'tab', chromeMediaSourceId: launch.streamId }
+                : { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints,
+              audio: launch.includeAudio ? { mandatory: { chromeMediaSource: launch.kind === 'chatgpt-tab' ? 'tab' : 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false,
             })
           : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const videoTrack = display.getVideoTracks()[0];
@@ -231,7 +237,7 @@ export function App() {
         }
         if (launch?.kind === 'chatgpt-tab' && !display.getAudioTracks().length) {
           stopStream(display);
-          throw new Error('Chrome did not provide ChatGPT tab audio. Choose its tab with Share tab audio enabled and try again.');
+          throw new Error('Chrome did not provide ChatGPT tab audio. Return to the ChatGPT tab and retry from the pinned extension icon.');
         }
         if (!mountedRef.current) { stopStream(display); return; }
         displayRef.current = display;
@@ -262,12 +268,12 @@ export function App() {
     try {
       const media = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true },
-        video: captureChoice === 'webcam' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+        video: captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
       });
       if (!mountedRef.current) { stopStream(media); return; }
-      const microphone = captureChoice === 'webcam' ? new MediaStream(media.getAudioTracks()) : media;
+      const microphone = captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab' ? new MediaStream(media.getAudioTracks()) : media;
       microphoneRef.current = microphone;
-      if (captureChoice === 'webcam') {
+      if (captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab') {
         webcamRef.current = media;
         if (previewRef.current) previewRef.current.srcObject = media;
       }
@@ -282,17 +288,26 @@ export function App() {
           const context = audioContextRef.current;
           if (!context || context.state === 'closed') throw new Error('Audio mixing could not start. Try recording again.');
           const destination = context.createMediaStreamDestination();
-          context.createMediaStreamSource(display).connect(destination);
+          const tabAudio = context.createMediaStreamSource(display);
+          tabAudio.connect(destination);
+          if (launch?.kind === 'chatgpt-tab') tabAudio.connect(context.destination);
           context.createMediaStreamSource(microphone).connect(destination);
           if (context.state !== 'running') await context.resume();
           if (context.state !== 'running') throw new Error('Audio mixing could not start. Try recording again.');
-          recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
+          if (launch?.kind === 'chatgpt-tab') {
+            const camera = webcamRef.current;
+            if (!camera?.getVideoTracks().length) throw new Error('Camera access is required for ChatGPT recording. Allow camera and microphone, then retry.');
+            const composite = await compositeTabAndCamera(display, camera);
+            compositeStopRef.current = composite.stop;
+            recordingStream = new MediaStream([...composite.stream.getVideoTracks(), ...destination.stream.getAudioTracks()]);
+          } else recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
         } else recordingStream = new MediaStream([videoTrack, ...microphone.getAudioTracks()]);
         mixedRef.current = recordingStream;
       }
       const recorder = new MediaRecorder(recordingStream, recorderOptions(recordingMode));
       recorderRef.current = recorder;
-      const analysisRecorder = recordingMode === 'video' ? new MediaRecorder(microphone, recorderOptions('audio')) : null;
+      const analysisAudio = launch?.kind === 'chatgpt-tab' ? new MediaStream(recordingStream.getAudioTracks()) : microphone;
+      const analysisRecorder = recordingMode === 'video' ? new MediaRecorder(analysisAudio, recorderOptions('audio')) : null;
       analysisRecorderRef.current = analysisRecorder;
       const mimeType = recorder.mimeType || (recordingMode === 'video' ? 'video/webm' : 'audio/webm');
       const analysisMimeType = analysisRecorder?.mimeType || null;
@@ -374,6 +389,7 @@ export function App() {
             else if (interruption || storageError) setNotice(finished.error ?? 'The session was interrupted.');
             else setNotice('Recorded successfully. Replay, download, or analyze your session below.');
             if (launch) reportControl({ type: 'RECORDER_FINISHED', sessionId: session.id, phase: finished.status === 'completed' ? 'completed' : finished.status === 'failed' ? 'failed' : 'interrupted', error: finished.error } satisfies ControlMessage);
+            if (finished.status === 'completed') void prepareTranscriptAutomatically(finished);
           } catch {
             if (!mountedRef.current) return;
             const fallback = new Blob(captured, { type: mimeType });
@@ -415,7 +431,7 @@ export function App() {
       stopLocalCompanion();
       recorderRef.current = null;
       activeIdRef.current = null;
-      const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, captureChoice === 'webcam' ? 'camera' : 'microphone');
+      const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab' ? 'camera' : 'microphone');
       try { await updateSession(session.id, { status: 'failed', endedAt: Date.now(), error: message }); }
       catch { /* The visible error still explains the failed start. */ }
       if (mountedRef.current) { setStatus('failed'); setError(message); await refreshSessions(); }
@@ -494,7 +510,7 @@ export function App() {
       try { ownVoice = await getAnalysisRecording(session.id); }
       catch { /* The full recording can still be available for a local fallback. */ }
       if (ownVoice?.size) recording = ownVoice;
-      else if (session.captureKind === 'webcam' || session.sharedAudio === false || allowFullCallTranscript) {
+      else if (session.captureKind === 'webcam' || session.captureKind === 'chatgpt-tab' || session.sharedAudio === false || allowFullCallTranscript) {
         let fullRecording: Blob | null = null;
         try { fullRecording = await getRecording(session.id); }
         catch { /* An in-memory recording may still be available. */ }
@@ -514,13 +530,25 @@ export function App() {
     return updated;
   }
 
+  async function prepareTranscriptAutomatically(session: Session) {
+    if (!mountedRef.current) return;
+    setUploading(true);
+    setNotice('Recording saved. Preparing the transcript below; the first run may take a few minutes.');
+    try {
+      await ensureUploaded(session);
+      if (mountedRef.current) setNotice('Recording saved. Transcript is being generated below.');
+    } catch (cause) {
+      if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'Automatic transcript could not start. Use Retry transcription below.');
+    } finally { if (mountedRef.current) setUploading(false); }
+  }
+
   async function sendToLocalApi() {
     if (!selected || !recordingUrl || uploading) return;
     setError(''); setNotice(''); setUploading(true);
     try {
       const session = await ensureUploaded({ ...selected, notes });
       if (mountedRef.current) setNotice(hasSeparateVoiceTrack(session)
-        ? 'Your microphone track was sent to the local server. Transcription is starting below; the full video stays in this browser.'
+        ? `${session.captureKind === 'chatgpt-tab' ? 'Both voices were' : 'Your microphone track was'} sent to the local server. Transcription is starting below; the full video stays in this browser.`
         : 'The local Python API received this recording. Transcription is starting below.');
     } catch (cause) {
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The local upload failed.');
@@ -635,11 +663,12 @@ export function App() {
             <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'webcam' ? 'My camera' : selected.captureKind === 'chatgpt-tab' ? 'ChatGPT tab' : selected.captureKind === 'screen-share' || selected.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'} · {selected.status} · {duration(selected.durationMs)}</p>
             {selected.captureKind === 'screen-share' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. The video contains your microphone only.</p>}
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
-            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
+            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{selected.captureKind === 'chatgpt-tab' ? 'Both voices sent for transcript' : hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
             {recordingUrl && (selected.mode === 'video'
               ? <video ref={(node) => { playbackRef.current = node; }} className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />
               : <audio ref={(node) => { playbackRef.current = node; }} className="mt-4 w-full" controls src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />)}
             {reviewSegments.length > 0 && <div className="mt-3 min-h-16 rounded-xl bg-slate-950 p-4 text-center text-sm text-white" aria-label="Words at current playback time">{activeCaption?.text || 'Play or seek to hear your words here.'}</div>}
+            {recordingUrl && <TranscriptPanel key={selected.id} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} onPrepareTranscript={() => void sendToLocalApi()} preparing={uploading} />}
             <label className="mt-5 block text-sm font-medium" htmlFor="session-notes">Notes</label>
             <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" disabled={uploading} />
             <div className="mt-4 flex flex-wrap gap-3">
@@ -649,17 +678,17 @@ export function App() {
               {recordingUrl && !selected.uploadedAt && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading}>{uploading ? 'Connecting…' : 'Create transcript'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
-            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{hasSeparateVoiceTrack(selected) ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
+            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{selected.captureKind === 'chatgpt-tab' ? 'Transcription sends the mixed call audio and notes' : hasSeparateVoiceTrack(selected) ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
             {error && <p className="mt-3 text-sm text-red-300" role="alert">{error}</p>}
             {notice && <p className="mt-3 text-sm text-emerald-300" role="status">{notice}</p>}
             {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && (selected.captureKind === 'webcam' || selected.sharedAudio === false)
               && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is missing. Transcription will copy the saved video to the local Python server on this computer.</p>}
-            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && selected.captureKind !== 'webcam' && selected.sharedAudio !== false && !selected.uploadedAt
+            {selected.captureKind === 'chatgpt-tab' && !selected.analysisSizeBytes && !selected.uploadedAt
+              && <p className="mt-2 text-xs text-amber-300">The separate mixed call audio is missing. Transcription will use the saved video on this computer.</p>}
+            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && selected.captureKind !== 'webcam' && selected.captureKind !== 'chatgpt-tab' && selected.sharedAudio !== false && !selected.uploadedAt
               && <label className="mt-3 flex items-start gap-2 text-xs text-amber-200"><input className="mt-0.5 accent-amber-300" type="checkbox" checked={allowFullCallTranscript} onChange={(event) => setAllowFullCallTranscript(event.target.checked)} />Use full call audio for the transcript. This sends the saved video to the local Python server and may transcribe both voices.</label>}
           </section>
         )}
-
-        {selected && recordingUrl && <TranscriptPanel key={selected.id} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} onPrepareTranscript={() => void sendToLocalApi()} preparing={uploading} />}
 
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
           <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Recent sessions</h2><button className="text-sm text-emerald-300 underline" onClick={() => void recover()} type="button">Recover interrupted</button></div>
