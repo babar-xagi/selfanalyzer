@@ -13,9 +13,9 @@ export function App() {
   const [capture, setCapture] = useState<CaptureState | null>(null);
   const [error, setError] = useState('');
 
-  async function control(type: PopupCommand) {
+  async function control(type: PopupCommand, includeCamera?: boolean) {
     try {
-      const reply = await browser.runtime.sendMessage<{ type: PopupCommand }, ControlReply>({ type });
+      const reply = await browser.runtime.sendMessage<{ type: PopupCommand; includeCamera?: boolean }, ControlReply>({ type, includeCamera });
       setCapture(reply.state);
       setError(reply.ok ? '' : reply.error ?? 'The recording command failed.');
     } catch {
@@ -55,14 +55,15 @@ export function App() {
           {status}
         </div>
         <p className="mt-3 text-sm leading-6 text-slate-300">Record a ChatGPT voice tab, a meeting screen, or your own camera.</p>
-        <p className="mt-3 text-xs leading-5 text-slate-400">Open the ChatGPT tab first. One click captures that tab, its voice, your camera, and microphone. Chrome may ask for camera and microphone permission the first time.</p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">Open the ChatGPT tab first. One click captures that tab, its voice, your camera, and microphone. For meetings, choose screen + camera or screen only. The local transcript server starts when needed and stops after review finishes.</p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 
       <div className="mt-5 space-y-3">
         {!isBusy(capture) && <>
           <PrimaryButton onClick={() => void control('CAPTURE_START_TAB')}>Record ChatGPT tab + both voices</PrimaryButton>
-          <PrimaryButton onClick={() => void control('CAPTURE_START')}>Record meeting screen</PrimaryButton>
+          <PrimaryButton onClick={() => void control('CAPTURE_START', true)}>Record screen + my camera</PrimaryButton>
+          <button className="w-full rounded-xl border border-sky-300 px-4 py-3 text-sm font-semibold text-sky-200" onClick={() => void control('CAPTURE_START', false)} type="button">Record screen only</button>
           <button className="w-full rounded-xl border border-emerald-300 px-4 py-3 text-sm font-semibold text-emerald-300" onClick={() => void control('CAPTURE_START_WEBCAM')} type="button">Record my camera</button>
         </>}
         {phase === 'recording' && <button className="w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={() => void control('CAPTURE_STOP')} type="button">Stop recording</button>}

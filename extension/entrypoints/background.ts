@@ -43,7 +43,7 @@ export default defineBackground(() => {
     await browser.tabs.create({ url: url.toString() });
   }
 
-  async function startCapture(): Promise<ControlReply> {
+  async function startCapture(includeCamera = true): Promise<ControlReply> {
     const current = await getState();
     if (['choosing', 'preparing', 'recording', 'processing'].includes(current.phase)) {
       if (current.phase === 'choosing' || current.recorderTabId === null) return { ok: false, state: current, error: 'A recording is already starting.' };
@@ -52,24 +52,36 @@ export default defineBackground(() => {
     }
     const [active] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
     const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: 'screen' });
+    let recorderTabId: number | null = null;
     try {
+      const pending = await browser.tabs.create({ url: browser.runtime.getURL('/record.html?pending=1'), active: false });
+      recorderTabId = pending.id ?? null;
+      if (recorderTabId === null) throw new Error('Chrome could not open the recorder tab.');
+      await setState({ recorderTabId });
       browser.desktopCapture.chooseDesktopMedia(['tab', 'window', 'screen', 'audio'], (streamId, options) => {
         void (async () => {
-          if (!streamId) { await setState({ phase: 'idle' }); return; }
+          if (!streamId) {
+            await setState({ phase: 'idle', recorderTabId: null });
+            if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
+            return;
+          }
           const url = new URL(browser.runtime.getURL('/record.html'));
-          url.hash = new URLSearchParams({ capture: streamId, audio: options.canRequestAudioTrack ? '1' : '0', kind: 'screen' }).toString();
-          const tab = await browser.tabs.create({ url: url.toString(), active: true });
-          await setState({ phase: 'preparing', recorderTabId: tab.id ?? null });
+          url.hash = new URLSearchParams({ capture: streamId, audio: options.canRequestAudioTrack ? '1' : '0', camera: includeCamera ? '1' : '0', kind: 'screen' }).toString();
+          await setState({ phase: 'preparing', recorderTabId });
+          await browser.tabs.update(recorderTabId!, { url: url.toString(), active: true });
         })().catch(async (cause: unknown) => {
           const error = cause instanceof Error ? cause.message : 'Could not start screen capture.';
-          await setState({ phase: 'failed', error });
+          await setState({ phase: 'failed', recorderTabId: null, error });
+          if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
           notify('Recording could not start', error);
         });
       });
       return { ok: true, state: choosing };
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : 'Could not open the screen picker.';
-      return { ok: false, state: await setState({ phase: 'failed', error }), error };
+      const failed = await setState({ phase: 'failed', recorderTabId: null, error });
+      if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
+      return { ok: false, state: failed, error };
     }
   }
 
@@ -125,7 +137,7 @@ export default defineBackground(() => {
     const state = await getState();
     switch (message.type) {
       case 'CAPTURE_STATUS': return { ok: true, state };
-      case 'CAPTURE_START': return startCapture();
+      case 'CAPTURE_START': return startCapture(message.includeCamera);
       case 'CAPTURE_START_TAB': return startChatGptCapture();
       case 'CAPTURE_START_WEBCAM': return startWebcam();
       case 'CAPTURE_OPEN':
@@ -133,8 +145,14 @@ export default defineBackground(() => {
         return { ok: true, state };
       case 'CAPTURE_STOP':
         if (state.recorderTabId === null || state.phase !== 'recording' || !state.sessionId) return { ok: false, state, error: 'No recording is running.' };
-        await browser.runtime.sendMessage({ type: 'RECORDER_STOP', sessionId: state.sessionId } satisfies ControlMessage);
-        return { ok: true, state: await setState({ phase: 'processing' }) };
+        await setState({ phase: 'processing' });
+        try {
+          await browser.runtime.sendMessage({ type: 'RECORDER_STOP', sessionId: state.sessionId } satisfies ControlMessage);
+          return { ok: true, state: await getState() };
+        } catch {
+          const error = 'Could not reach the recorder tab. Open recordings to recover saved chunks.';
+          return { ok: false, state: await setState({ phase: 'interrupted', error }), error };
+        }
       case 'RECORDER_STARTED':
         if (sender.tab?.id !== state.recorderTabId) return { ok: false, state };
         await setState({ phase: 'recording', sessionId: message.sessionId, error: null });

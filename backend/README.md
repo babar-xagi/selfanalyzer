@@ -1,6 +1,6 @@
 # Local Python API
 
-For ChatGPT tab recordings, the extension sends a separate mixed audio track with both voices to Python and keeps the video in the browser for replay and download. For other screen and webcam recordings, it normally sends only the separate microphone audio. If a separate track is missing, a webcam or ChatGPT video can be used locally as a fallback. For another meeting with shared audio, the user must explicitly choose full call transcription. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. Recordings and transcripts are not uploaded to an AI service.
+For ChatGPT tab and meeting screen recordings, the extension sends a separate mixed audio track with available shared audio and microphone input to Python and keeps the video in the browser for replay and download. Webcam recordings send the microphone audio. If a separate track is missing, the saved video can be used locally as a fallback. The API transcribes English speech with Faster Whisper and reviews clear grammar issues with a local language model. It does not distinguish speakers in a shared call. Recordings and transcripts are not uploaded to an AI service.
 
 ## Install on Windows
 
@@ -13,7 +13,7 @@ python -m venv .venv
 
 The Chrome companion uses this Windows virtual environment and starts the API only when the extension needs it. WSL Python cannot be launched through this Windows companion.
 
-The development extension now has fixed ID `cdgiokmmcnaimhhcjdokjogehhephppp`. Run `scripts/install_native_companion.ps1 -ExtensionId cdgiokmmcnaimhhcjdokjogehhephppp` once. The script builds `native/ConversationCoachHost.cs` using the installed .NET Framework compiler and registers it for Chrome under the current user's registry. You can use `-AdditionalExtensionIds ID1,ID2` while migrating older unpacked installs. The API runs only on `127.0.0.1:8000`. It stays available for automatic transcription and stops when the recorder tab or extension connection closes. Use `scripts/uninstall_native_companion.ps1` to remove the registration. Diagnostics are written to `data/native-host.log`.
+The development extension now has fixed ID `cdgiokmmcnaimhhcjdokjogehhephppp`. Run `scripts/install_native_companion.ps1 -ExtensionId cdgiokmmcnaimhhcjdokjogehhephppp` once. The script builds `native/ConversationCoachHost.cs` using the installed .NET Framework compiler and registers it for Chrome under the current user's registry. You can use `-AdditionalExtensionIds ID1,ID2` while migrating older unpacked installs. The API runs only on `127.0.0.1:8000`. It stays available while automatic transcription and grammar review run, then the extension stops it. Use `scripts/uninstall_native_companion.ps1` to remove the registration. Diagnostics are written to `data/native-host.log`.
 
 ## Local grammar model
 

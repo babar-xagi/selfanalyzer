@@ -17,10 +17,12 @@ interface Props {
   onSegmentsChange: (segments: TimedLine[]) => void;
   onSessionUpdated: (session: Session) => void;
   onPrepareTranscript: () => void;
+  onProcessingStarted: () => void;
+  onProcessingSettled: () => void;
   preparing: boolean;
 }
 
-export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsChange, onSessionUpdated, onPrepareTranscript, preparing }: Props) {
+export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsChange, onSessionUpdated, onPrepareTranscript, onProcessingStarted, onProcessingSettled, preparing }: Props) {
   const [transcript, setTranscript] = useState<RemoteTranscript | null>(null);
   const [lines, setLines] = useState<TimedLine[]>([]);
   const [draft, setDraft] = useState<TimedLine[]>([]);
@@ -44,6 +46,7 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
     onSegmentsChange([]);
     setError('');
     if (!session.uploadedAt) return () => { active = false; controller.abort(); };
+    onProcessingStarted();
 
     async function refresh() {
       try {
@@ -60,12 +63,16 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
             ? session.transcriptEdits : current.segments;
           setLines(saved);
           onSegmentsChange(saved);
+        } else if (current.status === 'failed') {
+          onProcessingSettled();
         } else if (current.status === 'queued' || current.status === 'running') {
           timer = window.setTimeout(() => { void refresh(); }, 2500);
         }
       } catch (cause) {
-        if (active && !controller.signal.aborted)
+        if (active && !controller.signal.aborted) {
           setError(cause instanceof Error ? cause.message : 'The transcript could not be loaded.');
+          onProcessingSettled();
+        }
       }
     }
 
@@ -126,7 +133,7 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
           <button className="rounded-lg border border-sky-300 px-3 py-2 text-xs font-semibold text-sky-200" type="button" onClick={() => downloadTranscript('vtt')}>Download subtitles</button>
         </div>}
       </div>
-      <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of {session.captureKind === 'chatgpt-tab' ? 'both voices' : 'your microphone audio'}. Listen and correct any misheard words. Click a timed line to replay pronunciation. Speaker labels and automatic pronunciation scores are not available. Timestamps are approximate.</p>
+      <p className="mt-2 text-xs leading-5 text-slate-400">This is an automatic draft of {session.captureKind === 'chatgpt-tab' || session.captureKind === 'screen-share' ? 'available call audio, including other speakers when shared audio was enabled' : 'your microphone audio'}. Listen and correct any misheard words. Click a timed line to replay pronunciation. Speaker labels and automatic pronunciation scores are not available. Timestamps are approximate.</p>
       {!session.uploadedAt && <div className="mt-4">
         <p className="text-sm text-slate-300">{preparing ? 'Preparing your transcript automatically…' : 'The transcript starts automatically after recording. Use this button to retry or prepare an older session.'}</p>
         <button className="mt-3 rounded-lg border border-emerald-300 px-3 py-2 text-sm font-semibold text-emerald-300 disabled:opacity-50" type="button" onClick={onPrepareTranscript} disabled={preparing}>{preparing ? 'Connecting…' : 'Create transcript'}</button>
@@ -175,6 +182,6 @@ export function TranscriptPanel({ session, playbackMs, onReplayAt, onSegmentsCha
         }}>Retry transcription</button>
       </>}
     </section>
-    {transcript?.status === 'completed' && <GrammarPanel key={transcript.updated_at} sessionId={session.id} onReplayAt={onReplayAt} />}
+    {transcript?.status === 'completed' && <GrammarPanel key={transcript.updated_at} sessionId={session.id} onReplayAt={onReplayAt} onProcessingStarted={onProcessingStarted} onProcessingSettled={onProcessingSettled} />}
   </>;
 }

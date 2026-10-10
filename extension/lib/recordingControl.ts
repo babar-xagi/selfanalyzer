@@ -12,7 +12,7 @@ export interface CaptureState {
 
 export type ControlMessage =
   | { type: 'CAPTURE_STATUS' }
-  | { type: 'CAPTURE_START' }
+  | { type: 'CAPTURE_START'; includeCamera?: boolean }
   | { type: 'CAPTURE_START_TAB' }
   | { type: 'CAPTURE_START_WEBCAM' }
   | { type: 'CAPTURE_STOP' }
@@ -29,7 +29,7 @@ export interface ControlReply {
 }
 
 export type CaptureLaunch =
-  | { kind: 'screen'; streamId: string; includeAudio: boolean }
+  | { kind: 'screen'; streamId: string; includeAudio: boolean; includeCamera: boolean }
   | { kind: 'chatgpt-tab'; streamId: string; includeAudio: true }
   | { kind: 'webcam' };
 
@@ -40,7 +40,7 @@ export function takeCaptureLaunch(): CaptureLaunch | null {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     return params.get('kind') === 'chatgpt-tab'
       ? { kind: 'chatgpt-tab', streamId, includeAudio: true }
-      : { kind: 'screen', streamId, includeAudio: params.get('audio') === '1' };
+      : { kind: 'screen', streamId, includeAudio: params.get('audio') === '1', includeCamera: params.get('camera') === '1' };
   }
   const query = new URLSearchParams(window.location.search);
   if (query.get('webcam') !== '1') return null;

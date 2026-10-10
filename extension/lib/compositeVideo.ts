@@ -1,8 +1,10 @@
-/** Draw the captured tab and the user's camera into one downloadable video track. */
-export async function compositeTabAndCamera(tab: MediaStream, camera: MediaStream): Promise<{ stream: MediaStream; stop: () => void }> {
+export type CameraLayout = 'corner' | 'large' | 'focus';
+
+/** Draw the shared screen and the user's camera into one downloadable video track. */
+export async function compositeScreenAndCamera(screen: MediaStream, camera: MediaStream, getLayout: () => CameraLayout): Promise<{ stream: MediaStream; stop: () => void }> {
   const tabVideo = document.createElement('video');
   const cameraVideo = document.createElement('video');
-  for (const [element, source] of [[tabVideo, tab], [cameraVideo, camera]] as const) {
+  for (const [element, source] of [[tabVideo, screen], [cameraVideo, camera]] as const) {
     element.muted = true;
     element.playsInline = true;
     element.srcObject = source;
@@ -12,22 +14,25 @@ export async function compositeTabAndCamera(tab: MediaStream, camera: MediaStrea
   canvas.width = 1600;
   canvas.height = 900;
   const context = canvas.getContext('2d', { alpha: false });
-  if (!context) throw new Error('Chrome could not combine the ChatGPT tab and camera.');
+  if (!context) throw new Error('Chrome could not combine the shared screen and camera.');
 
   const draw = () => {
     context.fillStyle = '#0b1015';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    if (tabVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && tabVideo.videoWidth && tabVideo.videoHeight) {
+    const screenReady = tabVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && tabVideo.videoWidth && tabVideo.videoHeight;
+    const cameraReady = cameraVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && cameraVideo.videoWidth && cameraVideo.videoHeight;
+    const layout = getLayout();
+    if (screenReady && layout !== 'focus') {
       const ratio = Math.min(canvas.width / tabVideo.videoWidth, canvas.height / tabVideo.videoHeight);
       const width = tabVideo.videoWidth * ratio;
       const height = tabVideo.videoHeight * ratio;
       context.drawImage(tabVideo, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
     }
-    if (cameraVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && cameraVideo.videoWidth && cameraVideo.videoHeight) {
-      const width = 360;
-      const height = 203;
-      const x = canvas.width - width - 24;
-      const y = canvas.height - height - 24;
+    if (cameraReady) {
+      const width = layout === 'focus' ? canvas.width : layout === 'large' ? 640 : 360;
+      const height = layout === 'focus' ? canvas.height : layout === 'large' ? 360 : 203;
+      const x = layout === 'focus' ? 0 : canvas.width - width - 24;
+      const y = layout === 'focus' ? 0 : canvas.height - height - 24;
       context.fillStyle = '#0b1015';
       context.fillRect(x - 4, y - 4, width + 8, height + 8);
       const sourceRatio = cameraVideo.videoWidth / cameraVideo.videoHeight;
@@ -38,21 +43,37 @@ export async function compositeTabAndCamera(tab: MediaStream, camera: MediaStrea
         (cameraVideo.videoWidth - sourceWidth) / 2, (cameraVideo.videoHeight - sourceHeight) / 2,
         sourceWidth, sourceHeight, x, y, width, height);
     }
+    if (screenReady && layout === 'focus') {
+      const width = 360;
+      const height = 203;
+      const x = canvas.width - width - 24;
+      const y = canvas.height - height - 24;
+      context.fillStyle = '#0b1015';
+      context.fillRect(x - 4, y - 4, width + 8, height + 8);
+      context.drawImage(tabVideo, x, y, width, height);
+    }
   };
   draw();
-  let frameRequest = 0;
+  let tabFrameRequest = 0;
+  let cameraFrameRequest = 0;
   const onTabFrame: VideoFrameRequestCallback = () => {
     draw();
-    frameRequest = tabVideo.requestVideoFrameCallback(onTabFrame);
+    tabFrameRequest = tabVideo.requestVideoFrameCallback(onTabFrame);
   };
-  frameRequest = tabVideo.requestVideoFrameCallback(onTabFrame);
-  const timer = window.setInterval(draw, 250);
+  const onCameraFrame: VideoFrameRequestCallback = () => {
+    draw();
+    cameraFrameRequest = cameraVideo.requestVideoFrameCallback(onCameraFrame);
+  };
+  tabFrameRequest = tabVideo.requestVideoFrameCallback(onTabFrame);
+  cameraFrameRequest = cameraVideo.requestVideoFrameCallback(onCameraFrame);
+  const timer = window.setInterval(draw, 200);
   const stream = canvas.captureStream(30);
   return {
     stream,
     stop: () => {
       window.clearInterval(timer);
-      tabVideo.cancelVideoFrameCallback(frameRequest);
+      tabVideo.cancelVideoFrameCallback(tabFrameRequest);
+      cameraVideo.cancelVideoFrameCallback(cameraFrameRequest);
       stream.getTracks().forEach((track) => track.stop());
       tabVideo.pause();
       cameraVideo.pause();

@@ -11,7 +11,7 @@ function categoryLabel(category: string): string {
   return category.replaceAll('_', ' ');
 }
 
-export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onReplayAt: (milliseconds: number) => void }) {
+export function GrammarPanel({ sessionId, onReplayAt, onProcessingStarted, onProcessingSettled }: { sessionId: string; onReplayAt: (milliseconds: number) => void; onProcessingStarted: () => void; onProcessingSettled: () => void }) {
   const [review, setReview] = useState<RemoteGrammar | null>(null);
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
@@ -25,6 +25,7 @@ export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onR
     retrySessionRef.current = null;
     setReview(null);
     setError('');
+    onProcessingStarted();
 
     async function refresh() {
       try {
@@ -38,10 +39,12 @@ export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onR
         setReview(current);
         if (current.status === 'queued' || current.status === 'running') {
           timer = window.setTimeout(() => { void refresh(); }, 3000);
-        }
+        } else onProcessingSettled();
       } catch (cause) {
-        if (active && !controller.signal.aborted)
+        if (active && !controller.signal.aborted) {
           setError(cause instanceof Error ? cause.message : 'Grammar feedback could not be loaded.');
+          onProcessingSettled();
+        }
       }
     }
 
@@ -56,7 +59,7 @@ export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onR
   return (
     <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6" aria-label="Grammar coach">
       <h2 className="text-lg font-semibold">Grammar coach</h2>
-      <p className="mt-2 text-xs leading-5 text-slate-400">Suggestions come from a local AI model. Check them against your recording, because transcripts can mishear speech.</p>
+      <p className="mt-2 text-xs leading-5 text-slate-400">Suggestions come from a local AI model. Check them against your recording and ignore corrections about other speakers, because speakers are not identified automatically.</p>
       {!review && !error && <p className="mt-4 text-sm text-slate-300">Checking grammar feedback…</p>}
       {(review?.status === 'queued' || review?.status === 'running') &&
         <p className="mt-4 text-sm text-slate-300" role="status">Reviewing your transcript on this computer. This may take a few minutes.</p>}
@@ -65,7 +68,7 @@ export function GrammarPanel({ sessionId, onReplayAt }: { sessionId: string; onR
           {review.corrections.map((correction, index) => (
             <li key={`${correction.timestamp_ms}-${index}`} className="rounded-xl border border-white/10 bg-slate-900/60 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300"><button className="underline" type="button" onClick={() => onReplayAt(correction.timestamp_ms)} aria-label={`Replay correction from ${timestamp(correction.timestamp_ms)}`}>{timestamp(correction.timestamp_ms)}</button> · {categoryLabel(correction.category)}</p>
-              <p className="mt-3 text-sm text-red-200"><span className="font-semibold">You said:</span> {correction.original}</p>
+              <p className="mt-3 text-sm text-red-200"><span className="font-semibold">Transcript:</span> {correction.original}</p>
               <p className="mt-2 text-sm text-emerald-200"><span className="font-semibold">Correction:</span> {correction.corrected}</p>
               <p className="mt-2 text-sm text-sky-200"><span className="font-semibold">Natural alternative:</span> {correction.natural_alternative}</p>
               <p className="mt-3 text-sm leading-6 text-slate-300">{correction.explanation}</p>

@@ -205,9 +205,9 @@ export async function finishSession(
   return finished;
 }
 
-export async function recoverInterruptedSessions(): Promise<Session[]> {
+export async function recoverInterruptedSessions(activeSessionId: string | null = null): Promise<Session[]> {
   const pending = (await listSessions()).filter((session) =>
-    ['preparing', 'recording', 'processing'].includes(session.status)
+    session.id !== activeSessionId && ['preparing', 'recording', 'processing'].includes(session.status)
     && Date.now() - session.updatedAt >= RECOVERY_AGE_MS,
   );
   const recovered: Session[] = [];

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PrimaryButton } from '../../components/PrimaryButton';
-import { compositeTabAndCamera } from '../../lib/compositeVideo';
+import { compositeScreenAndCamera, type CameraLayout } from '../../lib/compositeVideo';
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import { ensureLocalCompanion, stopLocalCompanion } from '../../lib/localCompanion';
 import { getRemoteSession, getTranscript, LocalApiError, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
@@ -68,6 +68,8 @@ function reportControl(message: ControlMessage): void {
 
 export function App() {
   const [choice, setChoice] = useState<RecordingChoice>(() => new URLSearchParams(window.location.search).get('webcam') === '1' ? 'webcam' : 'screen');
+  const [includeScreenCamera, setIncludeScreenCamera] = useState(true);
+  const [cameraLayout, setCameraLayout] = useState<CameraLayout>('corner');
   const [status, setStatus] = useState<ViewStatus>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -80,12 +82,12 @@ export function App() {
   const [bundlePreparing, setBundlePreparing] = useState(false);
   const [playbackMs, setPlaybackMs] = useState(0);
   const [reviewSegments, setReviewSegments] = useState<TranscriptSegment[]>([]);
-  const [allowFullCallTranscript, setAllowFullCallTranscript] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const analysisRecorderRef = useRef<MediaRecorder | null>(null);
   const displayRef = useRef<MediaStream | null>(null);
   const webcamRef = useRef<MediaStream | null>(null);
   const previewRef = useRef<HTMLVideoElement | null>(null);
+  const cameraLayoutRef = useRef<CameraLayout>('corner');
   const mixedRef = useRef<MediaStream | null>(null);
   const compositeStopRef = useRef<(() => void) | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -95,6 +97,7 @@ export function App() {
   const activeIdRef = useRef<string | null>(null);
   const selectionTokenRef = useRef(0);
   const startedRef = useRef(0);
+  const processingActiveRef = useRef(false);
   const mountedRef = useRef(false);
   const launchRef = useRef<CaptureLaunch | null>(takeCaptureLaunch());
   const focus = getPracticeFocus();
@@ -130,7 +133,7 @@ export function App() {
 
   async function recover() {
     try {
-      const recovered = await recoverInterruptedSessions();
+      const recovered = await recoverInterruptedSessions(activeIdRef.current);
       if (mountedRef.current) {
         await refreshSessions();
         if (recovered.length) setNotice(`${recovered.length} interrupted session${recovered.length === 1 ? '' : 's'} recovered from saved chunks.`);
@@ -191,7 +194,7 @@ export function App() {
   }, [status]);
 
   useEffect(() => {
-    if (choice === 'webcam' && status === 'recording' && previewRef.current && webcamRef.current)
+    if (status === 'recording' && previewRef.current && webcamRef.current)
       previewRef.current.srcObject = webcamRef.current;
   }, [choice, status]);
 
@@ -204,6 +207,7 @@ export function App() {
 
   async function startRecording(launch?: CaptureLaunch) {
     const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab' ? 'screen' : choice;
+    const wantsCamera = launch?.kind === 'chatgpt-tab' || (captureChoice === 'screen' && (launch?.kind === 'screen' ? launch.includeCamera : includeScreenCamera)) || captureChoice === 'webcam';
     const recordingMode: CaptureMode = captureChoice === 'audio' ? 'audio' : 'video';
     setError(''); setNotice(''); setElapsedMs(0);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -219,17 +223,21 @@ export function App() {
     setStatus('preparing');
     if (captureChoice === 'screen') {
       try {
-        audioContextRef.current = new AudioContext();
         // The popup supplies a one-use Chrome stream ID. The manual dashboard
         // path uses getDisplayMedia while its button has user activation.
-        const display = launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab'
-          ? await navigator.mediaDevices.getUserMedia({
-              video: { mandatory: launch.kind === 'chatgpt-tab'
-                ? { chromeMediaSource: 'tab', chromeMediaSourceId: launch.streamId }
-                : { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints,
-              audio: launch.includeAudio ? { mandatory: { chromeMediaSource: launch.kind === 'chatgpt-tab' ? 'tab' : 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false,
-            })
-          : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        let display: MediaStream;
+        if (launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab') {
+          const video = { mandatory: launch.kind === 'chatgpt-tab'
+            ? { chromeMediaSource: 'tab', chromeMediaSourceId: launch.streamId }
+            : { chromeMediaSource: 'desktop', chromeMediaSourceId: launch.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } } as MediaTrackConstraints;
+          const audio = launch.includeAudio ? { mandatory: { chromeMediaSource: launch.kind === 'chatgpt-tab' ? 'tab' : 'desktop', chromeMediaSourceId: launch.streamId } } as MediaTrackConstraints : false;
+          try { display = await navigator.mediaDevices.getUserMedia({ video, audio }); }
+          catch (cause) {
+            if (!audio || launch.kind === 'chatgpt-tab') throw cause;
+            display = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+            setNotice('Chrome did not provide shared audio. Screen video will still record; use headphones and your microphone for voices.');
+          }
+        } else display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const videoTrack = display.getVideoTracks()[0];
         if (!videoTrack) {
           stopStream(display);
@@ -266,14 +274,26 @@ export function App() {
     await refreshSessions();
 
     try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true },
-        video: captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
-      });
+      let media: MediaStream;
+      try {
+        media = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true },
+          video: wantsCamera ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+        });
+      } catch (cause) {
+        if (captureChoice !== 'screen') throw cause;
+        try {
+          media = wantsCamera ? await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true }, video: false }) : new MediaStream();
+          setNotice('Camera is unavailable. The screen and available audio will still be recorded.');
+        } catch {
+          media = new MediaStream();
+          setNotice('Camera and microphone are unavailable. The screen and any shared audio will still be recorded.');
+        }
+      }
       if (!mountedRef.current) { stopStream(media); return; }
-      const microphone = captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab' ? new MediaStream(media.getAudioTracks()) : media;
+      const microphone = new MediaStream(media.getAudioTracks());
       microphoneRef.current = microphone;
-      if (captureChoice === 'webcam' || launch?.kind === 'chatgpt-tab') {
+      if (media.getVideoTracks().length) {
         webcamRef.current = media;
         if (previewRef.current) previewRef.current.srcObject = media;
       }
@@ -285,29 +305,43 @@ export function App() {
         if (!display || !videoTrack || videoTrack.readyState !== 'live')
           throw new Error('The screen share stopped. Start again and choose a source.');
         if (sharedAudioTrack) {
-          const context = audioContextRef.current;
-          if (!context || context.state === 'closed') throw new Error('Audio mixing could not start. Try recording again.');
-          const destination = context.createMediaStreamDestination();
-          const tabAudio = context.createMediaStreamSource(display);
-          tabAudio.connect(destination);
-          if (launch?.kind === 'chatgpt-tab') tabAudio.connect(context.destination);
-          context.createMediaStreamSource(microphone).connect(destination);
-          if (context.state !== 'running') await context.resume();
-          if (context.state !== 'running') throw new Error('Audio mixing could not start. Try recording again.');
-          if (launch?.kind === 'chatgpt-tab') {
-            const camera = webcamRef.current;
-            if (!camera?.getVideoTracks().length) throw new Error('Camera access is required for ChatGPT recording. Allow camera and microphone, then retry.');
-            const composite = await compositeTabAndCamera(display, camera);
-            compositeStopRef.current = composite.stop;
-            recordingStream = new MediaStream([...composite.stream.getVideoTracks(), ...destination.stream.getAudioTracks()]);
-          } else recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
+          try {
+            const context = new AudioContext();
+            audioContextRef.current = context;
+            const destination = context.createMediaStreamDestination();
+            const tabAudio = context.createMediaStreamSource(display);
+            tabAudio.connect(destination);
+            if (launch?.kind === 'chatgpt-tab' || videoTrack.getSettings().displaySurface === 'browser') tabAudio.connect(context.destination);
+            if (microphone.getAudioTracks().length) context.createMediaStreamSource(microphone).connect(destination);
+            if (context.state !== 'running')
+              await Promise.race([context.resume().catch(() => {}), new Promise<void>((resolve) => window.setTimeout(resolve, 2500))]);
+            if (context.state !== 'running') throw new Error('Audio mixer did not start.');
+            recordingStream = new MediaStream([videoTrack, ...destination.stream.getAudioTracks()]);
+          } catch {
+            const context = audioContextRef.current;
+            audioContextRef.current = null;
+            if (context && context.state !== 'closed') void context.close();
+            const fallbackAudio = microphone.getAudioTracks()[0] ?? sharedAudioTrack;
+            recordingStream = new MediaStream([videoTrack, fallbackAudio]);
+            setNotice('Chrome could not mix both audio sources. Screen video continues with one available voice track; retry after checking microphone permission.');
+          }
         } else recordingStream = new MediaStream([videoTrack, ...microphone.getAudioTracks()]);
+        const camera = webcamRef.current;
+        if (camera?.getVideoTracks().length) {
+          try {
+            const composite = await compositeScreenAndCamera(display, camera, () => cameraLayoutRef.current);
+            compositeStopRef.current = composite.stop;
+            recordingStream = new MediaStream([...composite.stream.getVideoTracks(), ...recordingStream.getAudioTracks()]);
+          } catch {
+            setNotice('Camera overlay could not start. The screen and available audio will still record.');
+          }
+        }
         mixedRef.current = recordingStream;
       }
       const recorder = new MediaRecorder(recordingStream, recorderOptions(recordingMode));
       recorderRef.current = recorder;
-      const analysisAudio = launch?.kind === 'chatgpt-tab' ? new MediaStream(recordingStream.getAudioTracks()) : microphone;
-      const analysisRecorder = recordingMode === 'video' ? new MediaRecorder(analysisAudio, recorderOptions('audio')) : null;
+      const analysisAudio = captureChoice === 'screen' ? new MediaStream(recordingStream.getAudioTracks()) : microphone;
+      const analysisRecorder = recordingMode === 'video' && analysisAudio.getAudioTracks().length ? new MediaRecorder(analysisAudio, recorderOptions('audio')) : null;
       analysisRecorderRef.current = analysisRecorder;
       const mimeType = recorder.mimeType || (recordingMode === 'video' ? 'video/webm' : 'audio/webm');
       const analysisMimeType = analysisRecorder?.mimeType || null;
@@ -317,6 +351,7 @@ export function App() {
       let pendingWrite: Promise<void> = Promise.resolve();
       let pendingAnalysisWrite: Promise<void> = Promise.resolve();
       let interruption: string | null = null;
+      let shareEnded = false;
       let storageError: string | null = null;
       let resolveAnalysisStopped = () => {};
       const analysisStopped = analysisRecorder ? new Promise<void>((resolve) => { resolveAnalysisStopped = resolve; }) : Promise.resolve();
@@ -328,9 +363,14 @@ export function App() {
       for (const track of microphone.getAudioTracks()) {
         track.addEventListener('ended', () => interrupt('The microphone disconnected.'), { once: true });
       }
-      for (const track of displayRef.current?.getTracks() ?? []) {
-        track.addEventListener('ended', () => interrupt('The screen share stopped.'), { once: true });
-      }
+      displayRef.current?.getVideoTracks()[0]?.addEventListener('ended', () => {
+        shareEnded = true;
+        if (recorder.state === 'recording') recorder.stop();
+      }, { once: true });
+      for (const track of displayRef.current?.getAudioTracks() ?? [])
+        track.addEventListener('ended', () => {
+          if (mountedRef.current && recorder.state === 'recording') setNotice('Shared source audio ended. Screen video and your microphone continue recording.');
+        }, { once: true });
       for (const track of webcamRef.current?.getVideoTracks() ?? []) {
         track.addEventListener('ended', () => interrupt('The camera disconnected.'), { once: true });
       }
@@ -365,12 +405,13 @@ export function App() {
       recorder.onerror = () => interrupt('The recorder failed.');
       recorder.onstop = () => {
         void (async () => {
-          if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
-          await analysisStopped;
+          if (analysisRecorder?.state === 'recording') {
+            try { analysisRecorder.stop(); }
+            catch { resolveAnalysisStopped(); }
+          }
+          await Promise.race([analysisStopped, new Promise<void>((resolve) => window.setTimeout(resolve, 5000))]);
           releaseStreams();
-          stopLocalCompanion();
           recorderRef.current = null;
-          activeIdRef.current = null;
           const measuredMs = Math.max(0, performance.now() - startedRef.current);
           if (mountedRef.current) { setElapsedMs(measuredMs); setStatus('processing'); }
           try {
@@ -387,10 +428,12 @@ export function App() {
             setStatus(finished.status);
             if (finished.status === 'failed') setError(finished.error ?? 'No media was captured.');
             else if (interruption || storageError) setNotice(finished.error ?? 'The session was interrupted.');
-            else setNotice('Recorded successfully. Replay, download, or analyze your session below.');
+            else setNotice(shareEnded ? 'Screen sharing ended. Video saved successfully below.' : 'Recorded successfully. Replay, download, or analyze your session below.');
             if (launch) reportControl({ type: 'RECORDER_FINISHED', sessionId: session.id, phase: finished.status === 'completed' ? 'completed' : finished.status === 'failed' ? 'failed' : 'interrupted', error: finished.error } satisfies ControlMessage);
-            if (finished.status === 'completed') void prepareTranscriptAutomatically(finished);
+            if (finished.status === 'completed' && (finished.mode === 'audio' || finished.analysisSizeBytes)) void prepareTranscriptAutomatically(finished);
+            else stopLocalCompanion();
           } catch {
+            stopLocalCompanion();
             if (!mountedRef.current) return;
             const fallback = new Blob(captured, { type: mimeType });
             if (fallback.size) {
@@ -408,6 +451,7 @@ export function App() {
               if (launch) reportControl({ type: 'RECORDER_FINISHED', sessionId: session.id, phase: 'failed', error: 'No media was captured.' } satisfies ControlMessage);
             }
           }
+          activeIdRef.current = null;
         })();
       };
 
@@ -420,7 +464,8 @@ export function App() {
         if (mountedRef.current && recorder.state === 'recording')
           setNotice(`Recording is running, but transcripts may need setup: ${cause instanceof Error ? cause.message : 'The local companion could not start.'}`);
       });
-      if (captureChoice === 'screen' && !displayRef.current?.getAudioTracks().length) setNotice('The selected source did not share meeting audio. This recording will include your microphone only.');
+      if (captureChoice === 'screen' && !displayRef.current?.getAudioTracks().length)
+        setNotice((previous) => `${previous ? `${previous} ` : ''}The selected source did not share meeting audio. ${microphone.getAudioTracks().length ? 'Your microphone is being recorded.' : 'This video has no audio.'}`);
       if (launch) reportControl({ type: 'RECORDER_STARTED', sessionId: session.id } satisfies ControlMessage);
       await refreshSessions();
     } catch (cause) {
@@ -444,11 +489,19 @@ export function App() {
     if (recorder?.state === 'recording') { setStatus('processing'); recorder.stop(); }
   }
 
+  function processingSettled() {
+    processingActiveRef.current = false;
+    if (recorderRef.current?.state !== 'recording') stopLocalCompanion();
+  }
+
+  function processingStarted() {
+    processingActiveRef.current = true;
+  }
+
   async function selectSession(session: Session) {
     clearPlayback();
     setPlaybackMs(0);
     setReviewSegments([]);
-    setAllowFullCallTranscript(false);
     const token = selectionTokenRef.current;
     setError('');
     setSelected(session);
@@ -510,14 +563,14 @@ export function App() {
       try { ownVoice = await getAnalysisRecording(session.id); }
       catch { /* The full recording can still be available for a local fallback. */ }
       if (ownVoice?.size) recording = ownVoice;
-      else if (session.captureKind === 'webcam' || session.captureKind === 'chatgpt-tab' || session.sharedAudio === false || allowFullCallTranscript) {
+      else if (session.captureKind === 'webcam' || session.captureKind === 'chatgpt-tab' || session.captureKind === 'screen-share' || session.sharedAudio === false) {
         let fullRecording: Blob | null = null;
         try { fullRecording = await getRecording(session.id); }
         catch { /* An in-memory recording may still be available. */ }
         fullRecording ??= recordingUrl ? await fetch(recordingUrl).then((response) => response.blob()) : null;
         if (!fullRecording?.size) throw new Error('The saved recording is unavailable. Download the video alone while this tab is open.');
         recording = fullRecording;
-      } else throw new Error('Your separate microphone track is missing. Select “Use full call audio” below to transcribe both voices, or download the video alone.');
+      } else throw new Error('The analysis audio is missing. Download the video alone and check its sound.');
     } else {
       let blob: Blob | null = null;
       try { blob = await getRecording(session.id); }
@@ -532,25 +585,29 @@ export function App() {
 
   async function prepareTranscriptAutomatically(session: Session) {
     if (!mountedRef.current) return;
+    processingStarted();
     setUploading(true);
     setNotice('Recording saved. Preparing the transcript below; the first run may take a few minutes.');
     try {
       await ensureUploaded(session);
       if (mountedRef.current) setNotice('Recording saved. Transcript is being generated below.');
     } catch (cause) {
+      processingSettled();
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'Automatic transcript could not start. Use Retry transcription below.');
     } finally { if (mountedRef.current) setUploading(false); }
   }
 
   async function sendToLocalApi() {
     if (!selected || !recordingUrl || uploading) return;
+    processingStarted();
     setError(''); setNotice(''); setUploading(true);
     try {
       const session = await ensureUploaded({ ...selected, notes });
       if (mountedRef.current) setNotice(hasSeparateVoiceTrack(session)
-        ? `${session.captureKind === 'chatgpt-tab' ? 'Both voices were' : 'Your microphone track was'} sent to the local server. Transcription is starting below; the full video stays in this browser.`
+        ? `${session.captureKind === 'chatgpt-tab' || session.captureKind === 'screen-share' ? 'Available call audio was' : 'Your microphone track was'} sent to the local server. Transcription is starting below; the full video stays in this browser.`
         : 'The local Python API received this recording. Transcription is starting below.');
     } catch (cause) {
+      processingSettled();
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The local upload failed.');
     } finally { if (mountedRef.current) setUploading(false); }
   }
@@ -591,6 +648,7 @@ export function App() {
     } catch (cause) {
       if (mountedRef.current) setError(cause instanceof Error ? cause.message : 'The video and transcript could not be downloaded.');
     } finally {
+      if (!processingActiveRef.current) stopLocalCompanion();
       if (mountedRef.current) { setUploading(false); setBundlePreparing(false); }
     }
   }
@@ -615,7 +673,7 @@ export function App() {
       <div className="mx-auto max-w-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">Conversation Coach</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Record your conversation or yourself</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Capture a Google Meet or Episoden call, or record your own camera and voice. Replay, download, and review what you said.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Capture a Google Meet or Episoden call with your camera, or record your own camera and voice. Replay, download, and review what you said.</p>
 
         <fieldset className="mt-8" disabled={busy}>
           <legend className="text-sm font-medium text-slate-200">Recording mode</legend>
@@ -632,10 +690,11 @@ export function App() {
         {choice === 'screen' && (
           <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
             <h2 className="text-lg font-semibold">Before you record</h2>
+            <label className="mt-4 flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" className="accent-emerald-300" checked={includeScreenCamera} onChange={(event) => setIncludeScreenCamera(event.target.checked)} disabled={busy} />Include my camera on the screen recording</label>
             <ol className="mt-3 list-inside list-decimal space-y-2 text-sm leading-6 text-slate-300">
               <li>Open your meeting in Google Meet or Episoden and ask participants for permission to record.</li>
               <li>Click Start Recording and choose the meeting tab, a window, or the entire screen. Turn on <strong className="text-white">Share audio</strong> to include other voices.</li>
-              <li>Allow microphone access so the recording includes your voice.</li>
+              <li>Allow microphone and camera access. If one is unavailable, screen video still saves.</li>
               <li>Use headphones if possible to keep your partner's voice from echoing into your microphone.</li>
             </ol>
           </section>
@@ -650,7 +709,13 @@ export function App() {
           {activeId && <p className="mt-2 break-all font-mono text-xs text-slate-400">Session {activeId}</p>}
           {!busy && <div className="mt-6"><PrimaryButton onClick={() => void startRecording()} disabled={!canStart}>Start Recording</PrimaryButton></div>}
           {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{choice === 'screen' ? 'Choose a tab, window, or screen; turn on Share audio; then allow the microphone.' : choice === 'webcam' ? 'Allow the camera and microphone in Chrome.' : 'Choose Allow in the microphone prompt.'}</p>}
-          {choice === 'webcam' && status === 'recording' && <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label="Camera preview" />}
+          {status === 'recording' && webcamRef.current && <>
+            <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label="Camera preview" />
+            {displayRef.current && compositeStopRef.current && <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Camera size in saved video">
+              <span className="text-xs text-slate-300">Camera in video:</span>
+              {(['corner', 'large', 'focus'] as const).map((layout) => <button key={layout} type="button" className={`rounded-lg border px-3 py-2 text-xs ${cameraLayout === layout ? 'border-emerald-300 text-emerald-300' : 'border-white/20 text-slate-200'}`} onClick={() => { cameraLayoutRef.current = layout; setCameraLayout(layout); }}>{layout === 'corner' ? 'Corner' : layout === 'large' ? 'Large' : 'Face full screen'}</button>)}
+            </div>}
+          </>}
           {status === 'recording' && <button className="mt-6 w-full rounded-xl bg-red-400 px-4 py-3 text-sm font-semibold text-slate-950" onClick={stopRecording} type="button">Stop Recording</button>}
           {status === 'processing' && <p className="mt-6 text-sm text-slate-300">Saving the session…</p>}
           {error && <p className="mt-5 text-sm text-red-300" role="alert">{error}</p>}
@@ -661,14 +726,14 @@ export function App() {
             <h2 className="text-lg font-semibold">Session details</h2>
             <p className="mt-3 break-all font-mono text-xs text-slate-400">{selected.id}</p>
             <p className="mt-3 text-sm text-slate-300">{new Date(selected.createdAt).toLocaleString()} · {selected.captureKind === 'webcam' ? 'My camera' : selected.captureKind === 'chatgpt-tab' ? 'ChatGPT tab' : selected.captureKind === 'screen-share' || selected.captureKind === 'episoden-tab' ? 'Meeting screen' : 'My voice'} · {selected.status} · {duration(selected.durationMs)}</p>
-            {selected.captureKind === 'screen-share' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. The video contains your microphone only.</p>}
+            {selected.captureKind === 'screen-share' && selected.sharedAudio === false && <p className="mt-2 text-sm text-amber-300">Meeting audio was not shared. Only your microphone may be heard in this video.</p>}
             {selected.error && <p className="mt-3 text-sm text-amber-300">{selected.error}</p>}
-            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{selected.captureKind === 'chatgpt-tab' ? 'Both voices sent for transcript' : hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
+            {selected.uploadedAt && <p className="mt-3 text-sm text-emerald-300">{selected.captureKind === 'chatgpt-tab' || selected.captureKind === 'screen-share' ? 'Available call audio sent for transcript' : hasSeparateVoiceTrack(selected) ? 'Your voice sent for analysis' : 'Sent to local API'} on {new Date(selected.uploadedAt).toLocaleString()}</p>}
             {recordingUrl && (selected.mode === 'video'
               ? <video ref={(node) => { playbackRef.current = node; }} className="mt-4 aspect-video w-full rounded-xl bg-black" controls playsInline src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />
               : <audio ref={(node) => { playbackRef.current = node; }} className="mt-4 w-full" controls src={recordingUrl} preload="metadata" onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1000)} />)}
             {reviewSegments.length > 0 && <div className="mt-3 min-h-16 rounded-xl bg-slate-950 p-4 text-center text-sm text-white" aria-label="Words at current playback time">{activeCaption?.text || 'Play or seek to hear your words here.'}</div>}
-            {recordingUrl && <TranscriptPanel key={selected.id} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} onPrepareTranscript={() => void sendToLocalApi()} preparing={uploading} />}
+            {recordingUrl && <TranscriptPanel key={selected.id} session={selected} playbackMs={playbackMs} onReplayAt={replayAt} onSegmentsChange={setReviewSegments} onSessionUpdated={(updated) => { setSelected(updated); void refreshSessions(); }} onPrepareTranscript={() => void sendToLocalApi()} onProcessingStarted={processingStarted} onProcessingSettled={processingSettled} preparing={uploading} />}
             <label className="mt-5 block text-sm font-medium" htmlFor="session-notes">Notes</label>
             <textarea id="session-notes" className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-slate-900 p-3 text-sm text-white" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What would you like to improve next time?" disabled={uploading} />
             <div className="mt-4 flex flex-wrap gap-3">
@@ -678,15 +743,13 @@ export function App() {
               {recordingUrl && !selected.uploadedAt && <button className="rounded-xl border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-200 disabled:opacity-50" onClick={() => void sendToLocalApi()} type="button" disabled={uploading}>{uploading ? 'Connecting…' : 'Create transcript'}</button>}
               <button className="rounded-xl border border-red-300/50 px-4 py-2 text-sm text-red-200" onClick={() => void removeSession(selected)} type="button" disabled={uploading}>Delete session</button>
             </div>
-            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{selected.captureKind === 'chatgpt-tab' ? 'Transcription sends the mixed call audio and notes' : hasSeparateVoiceTrack(selected) ? 'Analysis sends only your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
+            {recordingUrl && <p className="mt-4 text-xs leading-5 text-slate-400">{selected.captureKind === 'chatgpt-tab' || selected.captureKind === 'screen-share' ? 'Transcription sends available mixed call audio and notes' : hasSeparateVoiceTrack(selected) ? 'Analysis sends your microphone track and notes' : 'Analysis sends this recording and your notes'} to the Python server on this computer at 127.0.0.1:8000. The full browser recording remains available.</p>}
             {error && <p className="mt-3 text-sm text-red-300" role="alert">{error}</p>}
             {notice && <p className="mt-3 text-sm text-emerald-300" role="status">{notice}</p>}
             {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && (selected.captureKind === 'webcam' || selected.sharedAudio === false)
               && <p className="mt-2 text-xs text-amber-300">Your separate microphone track is missing. Transcription will copy the saved video to the local Python server on this computer.</p>}
             {selected.captureKind === 'chatgpt-tab' && !selected.analysisSizeBytes && !selected.uploadedAt
               && <p className="mt-2 text-xs text-amber-300">The separate mixed call audio is missing. Transcription will use the saved video on this computer.</p>}
-            {hasSeparateVoiceTrack(selected) && !selected.analysisSizeBytes && selected.captureKind !== 'webcam' && selected.captureKind !== 'chatgpt-tab' && selected.sharedAudio !== false && !selected.uploadedAt
-              && <label className="mt-3 flex items-start gap-2 text-xs text-amber-200"><input className="mt-0.5 accent-amber-300" type="checkbox" checked={allowFullCallTranscript} onChange={(event) => setAllowFullCallTranscript(event.target.checked)} />Use full call audio for the transcript. This sends the saved video to the local Python server and may transcribe both voices.</label>}
           </section>
         )}
 

@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   appendAnalysisChunk, appendChunk, createSession, deleteSession,
   finishSession, getAnalysisRecording, getRecording, hasSeparateVoiceTrack,
-  listSessions, updateSession,
+  listSessions, recoverInterruptedSessions, updateSession,
 } from '../lib/sessions.ts';
 
 test('upgrades existing sessions and keeps full call separate from analysis audio', async () => {
@@ -43,16 +43,47 @@ test('upgrades existing sessions and keeps full call separate from analysis audi
   assert.deepEqual(await listSessions(), []);
 });
 
-test('screen sharing retains the audio availability and isolates analysis audio', async () => {
+test('screen sharing saves video and microphone audio after the share ends', async () => {
   const session = await createSession('video', 'screen-share');
   await updateSession(session.id, { sharedAudio: false });
   await appendChunk(session.id, 0, new Blob(['screen and microphone'], { type: 'video/webm' }));
   await appendAnalysisChunk(session.id, 0, new Blob(['my voice'], { type: 'audio/webm' }));
-  const finished = await finishSession(session.id, 'completed', 3000, 'video/webm', null, 'audio/webm');
+  const finished = await finishSession(session.id, 'interrupted', 3000, 'video/webm', 'The screen share stopped.', 'audio/webm');
   assert.equal(hasSeparateVoiceTrack(finished), true);
+  assert.equal(finished.status, 'interrupted');
   assert.equal(finished.sharedAudio, false);
   assert.equal(await (await getRecording(session.id)).text(), 'screen and microphone');
   assert.equal(await (await getAnalysisRecording(session.id)).text(), 'my voice');
+  await deleteSession(session.id);
+});
+
+test('meeting screen and camera recording keeps mixed call audio for transcription', async () => {
+  const session = await createSession('video', 'screen-share');
+  await updateSession(session.id, { sharedAudio: true });
+  await appendChunk(session.id, 0, new Blob(['screen, face, partner and microphone'], { type: 'video/webm' }));
+  await appendAnalysisChunk(session.id, 0, new Blob(['partner and microphone'], { type: 'audio/webm' }));
+  const finished = await finishSession(session.id, 'completed', 4000, 'video/webm', null, 'audio/webm');
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.sharedAudio, true);
+  assert.equal(await (await getRecording(session.id)).text(), 'screen, face, partner and microphone');
+  assert.equal(await (await getAnalysisRecording(session.id)).text(), 'partner and microphone');
+  await deleteSession(session.id);
+});
+
+test('recovery never takes over the screen session still owned by the recorder', async () => {
+  const realNow = Date.now;
+  let session;
+  try {
+    Date.now = () => realNow() - 60_000;
+    session = await createSession('video', 'screen-share');
+    await updateSession(session.id, { status: 'recording' });
+    await appendChunk(session.id, 0, new Blob(['captured screen'], { type: 'video/webm' }));
+  } finally { Date.now = realNow; }
+  assert.deepEqual(await recoverInterruptedSessions(session.id), []);
+  assert.equal((await listSessions()).find((item) => item.id === session.id).status, 'recording');
+  const recovered = await recoverInterruptedSessions();
+  assert.equal(recovered[0].status, 'interrupted');
+  assert.equal(await (await getRecording(session.id)).text(), 'captured screen');
   await deleteSession(session.id);
 });
 
