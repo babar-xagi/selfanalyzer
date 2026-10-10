@@ -87,6 +87,7 @@ export function App() {
   const analysisRecorderRef = useRef<MediaRecorder | null>(null);
   const displayRef = useRef<MediaStream | null>(null);
   const webcamRef = useRef<MediaStream | null>(null);
+  const compositePreviewRef = useRef<MediaStream | null>(null);
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const cameraLayoutRef = useRef<CameraLayout>('focus');
   const mixedRef = useRef<MediaStream | null>(null);
@@ -106,6 +107,7 @@ export function App() {
   function releaseStreams() {
     compositeStopRef.current?.();
     compositeStopRef.current = null;
+    compositePreviewRef.current = null;
     stopStream(microphoneRef.current);
     microphoneRef.current = null;
     stopStream(displayRef.current);
@@ -196,7 +198,7 @@ export function App() {
 
   useEffect(() => {
     if (cameraPreviewReady && previewRef.current && webcamRef.current)
-      previewRef.current.srcObject = webcamRef.current;
+      previewRef.current.srcObject = compositePreviewRef.current ?? webcamRef.current;
   }, [cameraPreviewReady, choice, status]);
 
   useEffect(() => {
@@ -374,6 +376,8 @@ export function App() {
           try {
             const composite = await compositeScreenAndCamera(display, camera, () => cameraLayoutRef.current);
             compositeStopRef.current = composite.stop;
+            compositePreviewRef.current = composite.stream;
+            if (previewRef.current) previewRef.current.srcObject = composite.stream;
             recordingStream = new MediaStream([...composite.stream.getVideoTracks(), ...recordingStream.getAudioTracks()]);
           } catch {
             if (wantsCamera) throw new Error('Could not combine your camera and screen. Restart the recording and check camera access.');
@@ -763,7 +767,7 @@ export function App() {
           {!busy && <div className="mt-6"><PrimaryButton onClick={() => void startFromDashboard()} disabled={!canStart}>Start Recording</PrimaryButton></div>}
           {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{choice === 'screen' ? 'Allow the camera and microphone, check the preview, then choose a tab, window, or screen with Share audio.' : choice === 'webcam' ? 'Allow the camera and microphone in Chrome.' : 'Choose Allow in the microphone prompt.'}</p>}
           {(status === 'preparing' || status === 'recording') && cameraPreviewReady && <>
-            <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label="Camera preview" />
+            <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label={status === 'recording' && compositePreviewRef.current ? 'Saved video preview' : 'Camera preview'} />
             {status === 'preparing' && <p className="mt-2 text-sm text-emerald-300">Camera is ready. Choose the screen source in Chrome's picker.</p>}
             {displayRef.current && compositeStopRef.current && <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Camera size in saved video">
               <span className="text-xs text-slate-300">Saved video layout:</span>
