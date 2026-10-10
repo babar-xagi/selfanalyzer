@@ -32,7 +32,7 @@ export function App() {
   const phase = capture?.phase ?? 'idle';
   const status = phase === 'recording' ? 'Recording in background'
     : phase === 'choosing' ? 'Choose a tab, window, or screen'
-    : phase === 'preparing' ? 'Starting recorder and microphone…'
+    : phase === 'preparing' ? 'Allow camera and microphone in the recorder…'
     : phase === 'processing' ? 'Saving your recording…'
     : phase === 'completed' ? 'Recorded successfully'
     : phase === 'interrupted' ? 'Recording interrupted'
@@ -55,7 +55,7 @@ export function App() {
           {status}
         </div>
         <p className="mt-3 text-sm leading-6 text-slate-300">Record a ChatGPT voice tab, a meeting screen, or your own camera.</p>
-        <p className="mt-3 text-xs leading-5 text-slate-400">Open the ChatGPT tab first. One click captures that tab, its voice, your camera, and microphone. For meetings, choose screen + camera or screen only. The local transcript server starts when needed and stops after review finishes.</p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">Open the ChatGPT tab first. One click captures that tab, its voice, your camera, and microphone. For meetings, allow camera and microphone in the recorder tab, check the preview, then choose the screen and Share audio. The saved video shows your face with the screen in a corner. The local transcript server stops after review finishes.</p>
         <div className="mt-5 rounded-lg bg-slate-900/70 px-3 py-2 text-sm text-slate-200">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></div>
       </section>
 

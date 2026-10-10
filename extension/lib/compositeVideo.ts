@@ -9,7 +9,12 @@ export async function compositeScreenAndCamera(screen: MediaStream, camera: Medi
     element.playsInline = true;
     element.srcObject = source;
   }
-  await Promise.all([tabVideo.play(), cameraVideo.play()]);
+  // An inactive shared tab may not deliver its first frame until the recorder
+  // starts and Chrome returns to that tab. Do not wait indefinitely here.
+  await Promise.race([
+    Promise.all([tabVideo.play(), cameraVideo.play()]),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 1000)),
+  ]);
   const canvas = document.createElement('canvas');
   canvas.width = 1600;
   canvas.height = 900;
@@ -50,7 +55,10 @@ export async function compositeScreenAndCamera(screen: MediaStream, camera: Medi
       const y = canvas.height - height - 24;
       context.fillStyle = '#0b1015';
       context.fillRect(x - 4, y - 4, width + 8, height + 8);
-      context.drawImage(tabVideo, x, y, width, height);
+      const ratio = Math.min(width / tabVideo.videoWidth, height / tabVideo.videoHeight);
+      const fitWidth = tabVideo.videoWidth * ratio;
+      const fitHeight = tabVideo.videoHeight * ratio;
+      context.drawImage(tabVideo, x + (width - fitWidth) / 2, y + (height - fitHeight) / 2, fitWidth, fitHeight);
     }
   };
   draw();

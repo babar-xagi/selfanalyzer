@@ -51,38 +51,55 @@ export default defineBackground(() => {
       catch { /* A closed tab can be replaced with a new capture. */ }
     }
     const [active] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
-    const choosing = await setState({ phase: 'choosing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: 'screen' });
+    const preparing = await setState({ phase: 'preparing', recorderTabId: null, returnTabId: active?.id ?? null, sessionId: null, error: null, source: 'screen' });
     let recorderTabId: number | null = null;
     try {
-      const pending = await browser.tabs.create({ url: browser.runtime.getURL('/record.html?pending=1'), active: false });
-      recorderTabId = pending.id ?? null;
+      const recorder = await browser.tabs.create({ url: 'about:blank', active: true });
+      recorderTabId = recorder.id ?? null;
       if (recorderTabId === null) throw new Error('Chrome could not open the recorder tab.');
       await setState({ recorderTabId });
-      browser.desktopCapture.chooseDesktopMedia(['tab', 'window', 'screen', 'audio'], (streamId, options) => {
-        void (async () => {
-          if (!streamId) {
-            await setState({ phase: 'idle', recorderTabId: null });
-            if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
-            return;
-          }
-          const url = new URL(browser.runtime.getURL('/record.html'));
-          url.hash = new URLSearchParams({ capture: streamId, audio: options.canRequestAudioTrack ? '1' : '0', camera: includeCamera ? '1' : '0', kind: 'screen' }).toString();
-          await setState({ phase: 'preparing', recorderTabId });
-          await browser.tabs.update(recorderTabId!, { url: url.toString(), active: true });
-        })().catch(async (cause: unknown) => {
-          const error = cause instanceof Error ? cause.message : 'Could not start screen capture.';
-          await setState({ phase: 'failed', recorderTabId: null, error });
-          if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
-          notify('Recording could not start', error);
-        });
-      });
-      return { ok: true, state: choosing };
+      await browser.tabs.update(recorderTabId, { url: browser.runtime.getURL(`/record.html?prepareScreen=1&camera=${includeCamera ? '1' : '0'}`) });
+      return { ok: true, state: preparing };
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : 'Could not open the screen picker.';
       const failed = await setState({ phase: 'failed', recorderTabId: null, error });
       if (recorderTabId !== null) await browser.tabs.remove(recorderTabId).catch(() => {});
       return { ok: false, state: failed, error };
     }
+  }
+
+  async function pickScreen(sender: Browser.runtime.MessageSender): Promise<ControlReply> {
+    const state = await getState();
+    if (state.source !== 'screen' || sender.tab?.id !== state.recorderTabId || state.phase !== 'preparing')
+      return { ok: false, state, error: 'The screen recorder is no longer preparing.' };
+    await setState({ phase: 'choosing' });
+    return new Promise<ControlReply>((resolve) => {
+      try {
+        browser.desktopCapture.chooseDesktopMedia(['tab', 'window', 'screen', 'audio'], (streamId, options) => {
+          void (async () => {
+            const latest = await getState();
+            if (latest.recorderTabId !== sender.tab?.id || latest.phase !== 'choosing') {
+              resolve({ ok: false, state: latest, error: 'The recorder tab closed before a screen was selected.' });
+              return;
+            }
+            if (!streamId) {
+              const error = 'Screen sharing was cancelled. Choose a tab, window, or screen and try again.';
+              resolve({ ok: false, state: await setState({ phase: 'failed', error }), error });
+              return;
+            }
+            // The ID expires in seconds; return it directly to the already loaded
+            // recorder page so it can consume it without a tab navigation.
+            resolve({ ok: true, state: await setState({ phase: 'preparing' }), streamId, includeAudio: options.canRequestAudioTrack });
+          })().catch(async (cause: unknown) => {
+            const error = cause instanceof Error ? cause.message : 'Could not choose a screen.';
+            resolve({ ok: false, state: await setState({ phase: 'failed', error }), error });
+          });
+        });
+      } catch (cause) {
+        const error = cause instanceof Error ? cause.message : 'Could not open the screen picker.';
+        void setState({ phase: 'failed', error }).then((failed) => resolve({ ok: false, state: failed, error }));
+      }
+    });
   }
 
   async function startChatGptCapture(): Promise<ControlReply> {
@@ -140,6 +157,7 @@ export default defineBackground(() => {
       case 'CAPTURE_START': return startCapture(message.includeCamera);
       case 'CAPTURE_START_TAB': return startChatGptCapture();
       case 'CAPTURE_START_WEBCAM': return startWebcam();
+      case 'RECORDER_PICK_SCREEN': return pickScreen(sender);
       case 'CAPTURE_OPEN':
         await openRecorder(state);
         return { ok: true, state };
@@ -189,7 +207,7 @@ export default defineBackground(() => {
     void (async () => {
       const state = await getState();
       if (state.recorderTabId !== tabId) return;
-      if (['preparing', 'recording', 'processing'].includes(state.phase)) {
+      if (['choosing', 'preparing', 'recording', 'processing'].includes(state.phase)) {
         await setState({ phase: 'interrupted', recorderTabId: null, error: 'The recorder tab was closed. Open recordings to recover saved chunks.' });
         notify('Recording interrupted', 'The recorder tab closed. Open Conversation Coach to recover saved chunks.');
       } else await setState({ recorderTabId: null });

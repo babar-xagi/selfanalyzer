@@ -5,7 +5,7 @@ import { compositeScreenAndCamera, type CameraLayout } from '../../lib/composite
 import { getPracticeFocus, getPracticeFocusLabel } from '../../lib/focus';
 import { ensureLocalCompanion, stopLocalCompanion } from '../../lib/localCompanion';
 import { getRemoteSession, getTranscript, LocalApiError, startTranscript, uploadSession, type TranscriptSegment } from '../../lib/backend';
-import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage } from '../../lib/recordingControl';
+import { takeCaptureLaunch, type CaptureLaunch, type ControlMessage, type ControlReply } from '../../lib/recordingControl';
 import { activeLineIndex, downloadBlob, recordingBundle, transcriptText, transcriptVtt } from '../../lib/transcript';
 import { TranscriptPanel } from './TranscriptPanel';
 import {
@@ -69,7 +69,8 @@ function reportControl(message: ControlMessage): void {
 export function App() {
   const [choice, setChoice] = useState<RecordingChoice>(() => new URLSearchParams(window.location.search).get('webcam') === '1' ? 'webcam' : 'screen');
   const [includeScreenCamera, setIncludeScreenCamera] = useState(true);
-  const [cameraLayout, setCameraLayout] = useState<CameraLayout>('corner');
+  const [cameraLayout, setCameraLayout] = useState<CameraLayout>('focus');
+  const [cameraPreviewReady, setCameraPreviewReady] = useState(false);
   const [status, setStatus] = useState<ViewStatus>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -87,7 +88,7 @@ export function App() {
   const displayRef = useRef<MediaStream | null>(null);
   const webcamRef = useRef<MediaStream | null>(null);
   const previewRef = useRef<HTMLVideoElement | null>(null);
-  const cameraLayoutRef = useRef<CameraLayout>('corner');
+  const cameraLayoutRef = useRef<CameraLayout>('focus');
   const mixedRef = useRef<MediaStream | null>(null);
   const compositeStopRef = useRef<(() => void) | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -194,9 +195,9 @@ export function App() {
   }, [status]);
 
   useEffect(() => {
-    if (status === 'recording' && previewRef.current && webcamRef.current)
+    if (cameraPreviewReady && previewRef.current && webcamRef.current)
       previewRef.current.srcObject = webcamRef.current;
-  }, [choice, status]);
+  }, [cameraPreviewReady, choice, status]);
 
   useEffect(() => {
     if (!activeStatuses.includes(status)) return;
@@ -206,8 +207,8 @@ export function App() {
   }, [status]);
 
   async function startRecording(launch?: CaptureLaunch) {
-    const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' || launch?.kind === 'chatgpt-tab' ? 'screen' : choice;
-    const wantsCamera = launch?.kind === 'chatgpt-tab' || (captureChoice === 'screen' && (launch?.kind === 'screen' ? launch.includeCamera : includeScreenCamera)) || captureChoice === 'webcam';
+    const captureChoice: RecordingChoice = launch?.kind === 'webcam' ? 'webcam' : launch?.kind === 'screen' || launch?.kind === 'prepare-screen' || launch?.kind === 'chatgpt-tab' ? 'screen' : choice;
+    const wantsCamera = launch?.kind === 'chatgpt-tab' || (captureChoice === 'screen' && (launch?.kind === 'screen' || launch?.kind === 'prepare-screen' ? launch.includeCamera : includeScreenCamera)) || captureChoice === 'webcam';
     const recordingMode: CaptureMode = captureChoice === 'audio' ? 'audio' : 'video';
     setError(''); setNotice(''); setElapsedMs(0);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -221,6 +222,45 @@ export function App() {
     }
 
     setStatus('preparing');
+    let preparedMedia: MediaStream | null = null;
+    if (launch?.kind === 'prepare-screen') {
+      try {
+        // Ask for the camera and microphone while this recorder tab is visible.
+        // Chrome's screen ID is one-use and expires quickly, so open its picker
+        // only after these permissions have settled.
+        try {
+          preparedMedia = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true },
+            video: wantsCamera ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          });
+        } catch (cause) {
+          if (wantsCamera) {
+            try {
+              preparedMedia = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+              setNotice('Microphone was not available. Your camera and shared tab audio can still record.');
+            } catch { throw cause; }
+          } else {
+            preparedMedia = new MediaStream();
+            setNotice('Microphone was not available. Shared tab audio can still record.');
+          }
+        }
+        if (!mountedRef.current) { stopStream(preparedMedia); return; }
+        webcamRef.current = preparedMedia;
+        if (preparedMedia.getVideoTracks().length) {
+          setCameraPreviewReady(true);
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+        }
+        const reply = await browser.runtime.sendMessage<ControlMessage, ControlReply>({ type: 'RECORDER_PICK_SCREEN' });
+        if (!reply.ok || !reply.streamId) throw new Error(reply.error ?? 'A tab, window, or screen was not selected.');
+        launch = { kind: 'screen', streamId: reply.streamId, includeAudio: Boolean(reply.includeAudio), includeCamera: wantsCamera };
+      } catch (cause) {
+        releaseStreams(); setCameraPreviewReady(false); setStatus('idle');
+        const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : deviceError(cause, wantsCamera ? 'camera' : 'microphone');
+        setError(message);
+        reportControl({ type: 'RECORDER_FAILED', error: message });
+        return;
+      }
+    }
     if (captureChoice === 'screen') {
       try {
         // The popup supplies a one-use Chrome stream ID. The manual dashboard
@@ -250,7 +290,7 @@ export function App() {
         if (!mountedRef.current) { stopStream(display); return; }
         displayRef.current = display;
       } catch (cause) {
-        releaseStreams();
+        releaseStreams(); setCameraPreviewReady(false);
         if (mountedRef.current) {
           setStatus('idle');
           const message = cause instanceof Error && !(cause instanceof DOMException) ? cause.message : 'Screen sharing was cancelled or denied. Choose a tab, window, or screen.';
@@ -264,7 +304,7 @@ export function App() {
     let session: Session;
     try { session = await createSession(recordingMode, launch?.kind === 'chatgpt-tab' ? 'chatgpt-tab' : captureChoice === 'screen' ? 'screen-share' : captureChoice === 'webcam' ? 'webcam' : 'microphone'); }
     catch {
-      releaseStreams(); setStatus('idle');
+      releaseStreams(); setCameraPreviewReady(false); setStatus('idle');
       setError('Local storage is unavailable. Free space or enable browser storage, then try again.');
       if (launch) reportControl({ type: 'RECORDER_FAILED', error: 'Local storage is unavailable.' } satisfies ControlMessage);
       return;
@@ -276,7 +316,7 @@ export function App() {
     try {
       let media: MediaStream;
       try {
-        media = await navigator.mediaDevices.getUserMedia({
+        media = preparedMedia ?? await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true },
           video: wantsCamera ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
         });
@@ -295,6 +335,7 @@ export function App() {
       microphoneRef.current = microphone;
       if (media.getVideoTracks().length) {
         webcamRef.current = media;
+        setCameraPreviewReady(true);
         if (previewRef.current) previewRef.current.srcObject = media;
       }
       let recordingStream: MediaStream = captureChoice === 'webcam' ? media : microphone;
@@ -327,12 +368,15 @@ export function App() {
           }
         } else recordingStream = new MediaStream([videoTrack, ...microphone.getAudioTracks()]);
         const camera = webcamRef.current;
+        if (wantsCamera && camera?.getVideoTracks()[0]?.readyState !== 'live')
+          throw new Error('The camera stopped before recording began. Allow the camera, then start again.');
         if (camera?.getVideoTracks().length) {
           try {
             const composite = await compositeScreenAndCamera(display, camera, () => cameraLayoutRef.current);
             compositeStopRef.current = composite.stop;
             recordingStream = new MediaStream([...composite.stream.getVideoTracks(), ...recordingStream.getAudioTracks()]);
           } catch {
+            if (wantsCamera) throw new Error('Could not combine your camera and screen. Restart the recording and check camera access.');
             setNotice('Camera overlay could not start. The screen and available audio will still record.');
           }
         }
@@ -410,7 +454,7 @@ export function App() {
             catch { resolveAnalysisStopped(); }
           }
           await Promise.race([analysisStopped, new Promise<void>((resolve) => window.setTimeout(resolve, 5000))]);
-          releaseStreams();
+          releaseStreams(); setCameraPreviewReady(false);
           recorderRef.current = null;
           const measuredMs = Math.max(0, performance.now() - startedRef.current);
           if (mountedRef.current) { setElapsedMs(measuredMs); setStatus('processing'); }
@@ -472,7 +516,7 @@ export function App() {
       const analysisRecorder = analysisRecorderRef.current;
       if (analysisRecorder?.state === 'recording') analysisRecorder.stop();
       analysisRecorderRef.current = null;
-      releaseStreams();
+      releaseStreams(); setCameraPreviewReady(false);
       stopLocalCompanion();
       recorderRef.current = null;
       activeIdRef.current = null;
@@ -663,6 +707,15 @@ export function App() {
     } catch { setError('The session could not be deleted from local storage.'); }
   }
 
+  async function startFromDashboard() {
+    if (choice !== 'screen') { await startRecording(); return; }
+    setError(''); setNotice('Opening camera preview and screen picker…');
+    try {
+      const reply = await browser.runtime.sendMessage<ControlMessage, ControlReply>({ type: 'CAPTURE_START', includeCamera: includeScreenCamera });
+      if (!reply.ok) setError(reply.error ?? 'Could not start the screen recorder.');
+    } catch { setError('Could not open the screen recorder. Reload the extension and try again.'); }
+  }
+
   const busy = activeStatuses.includes(status) || uploading;
   const canStart = !busy;
   const activeId = activeIdRef.current;
@@ -693,8 +746,8 @@ export function App() {
             <label className="mt-4 flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" className="accent-emerald-300" checked={includeScreenCamera} onChange={(event) => setIncludeScreenCamera(event.target.checked)} disabled={busy} />Include my camera on the screen recording</label>
             <ol className="mt-3 list-inside list-decimal space-y-2 text-sm leading-6 text-slate-300">
               <li>Open your meeting in Google Meet or Episoden and ask participants for permission to record.</li>
-              <li>Click Start Recording and choose the meeting tab, a window, or the entire screen. Turn on <strong className="text-white">Share audio</strong> to include other voices.</li>
-              <li>Allow microphone and camera access. If one is unavailable, screen video still saves.</li>
+              <li>Click Start Recording. Allow camera and microphone first, and check your camera preview.</li>
+              <li>Choose the meeting tab, a window, or the entire screen. Turn on <strong className="text-white">Share audio</strong> to include other voices.</li>
               <li>Use headphones if possible to keep your partner's voice from echoing into your microphone.</li>
             </ol>
           </section>
@@ -707,12 +760,13 @@ export function App() {
           <p className="mt-5 font-mono text-5xl font-semibold tabular-nums" role="timer">{duration(elapsedMs)}</p>
           <p className="mt-5 text-sm text-slate-300">Focus: <strong className="font-medium text-white">{getPracticeFocusLabel(focus)}</strong></p>
           {activeId && <p className="mt-2 break-all font-mono text-xs text-slate-400">Session {activeId}</p>}
-          {!busy && <div className="mt-6"><PrimaryButton onClick={() => void startRecording()} disabled={!canStart}>Start Recording</PrimaryButton></div>}
-          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{choice === 'screen' ? 'Choose a tab, window, or screen; turn on Share audio; then allow the microphone.' : choice === 'webcam' ? 'Allow the camera and microphone in Chrome.' : 'Choose Allow in the microphone prompt.'}</p>}
-          {status === 'recording' && webcamRef.current && <>
+          {!busy && <div className="mt-6"><PrimaryButton onClick={() => void startFromDashboard()} disabled={!canStart}>Start Recording</PrimaryButton></div>}
+          {status === 'preparing' && <p className="mt-6 text-sm text-slate-300">{choice === 'screen' ? 'Allow the camera and microphone, check the preview, then choose a tab, window, or screen with Share audio.' : choice === 'webcam' ? 'Allow the camera and microphone in Chrome.' : 'Choose Allow in the microphone prompt.'}</p>}
+          {(status === 'preparing' || status === 'recording') && cameraPreviewReady && <>
             <video ref={previewRef} className="mt-6 aspect-video w-full rounded-xl bg-black" autoPlay muted playsInline aria-label="Camera preview" />
+            {status === 'preparing' && <p className="mt-2 text-sm text-emerald-300">Camera is ready. Choose the screen source in Chrome's picker.</p>}
             {displayRef.current && compositeStopRef.current && <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Camera size in saved video">
-              <span className="text-xs text-slate-300">Camera in video:</span>
+              <span className="text-xs text-slate-300">Saved video layout:</span>
               {(['corner', 'large', 'focus'] as const).map((layout) => <button key={layout} type="button" className={`rounded-lg border px-3 py-2 text-xs ${cameraLayout === layout ? 'border-emerald-300 text-emerald-300' : 'border-white/20 text-slate-200'}`} onClick={() => { cameraLayoutRef.current = layout; setCameraLayout(layout); }}>{layout === 'corner' ? 'Corner' : layout === 'large' ? 'Large' : 'Face full screen'}</button>)}
             </div>}
           </>}

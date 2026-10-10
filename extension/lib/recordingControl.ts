@@ -17,6 +17,7 @@ export type ControlMessage =
   | { type: 'CAPTURE_START_WEBCAM' }
   | { type: 'CAPTURE_STOP' }
   | { type: 'CAPTURE_OPEN' }
+  | { type: 'RECORDER_PICK_SCREEN' }
   | { type: 'RECORDER_STARTED'; sessionId: string }
   | { type: 'RECORDER_FINISHED'; sessionId: string; phase: 'completed' | 'interrupted' | 'failed'; error: string | null }
   | { type: 'RECORDER_FAILED'; error: string }
@@ -26,9 +27,12 @@ export interface ControlReply {
   ok: boolean;
   state: CaptureState;
   error?: string;
+  streamId?: string;
+  includeAudio?: boolean;
 }
 
 export type CaptureLaunch =
+  | { kind: 'prepare-screen'; includeCamera: boolean }
   | { kind: 'screen'; streamId: string; includeAudio: boolean; includeCamera: boolean }
   | { kind: 'chatgpt-tab'; streamId: string; includeAudio: true }
   | { kind: 'webcam' };
@@ -43,6 +47,14 @@ export function takeCaptureLaunch(): CaptureLaunch | null {
       : { kind: 'screen', streamId, includeAudio: params.get('audio') === '1', includeCamera: params.get('camera') === '1' };
   }
   const query = new URLSearchParams(window.location.search);
+  if (query.get('prepareScreen') === '1') {
+    const includeCamera = query.get('camera') !== '0';
+    query.delete('prepareScreen');
+    query.delete('camera');
+    const remaining = query.toString();
+    window.history.replaceState(null, '', window.location.pathname + (remaining ? `?${remaining}` : ''));
+    return { kind: 'prepare-screen', includeCamera };
+  }
   if (query.get('webcam') !== '1') return null;
   query.delete('webcam');
   const remaining = query.toString();
